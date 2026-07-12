@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Remix 3 中文文档 — 面向未来的全栈 Web 框架</title>
+  <meta name="description" content="Remix 3 是基于 Web 标准的全栈 Web 框架，模型优先开发、构建于 Web API 之上、彻底运行时化。零依赖、可组合、可移植。" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Space Grotesk', 'sans-serif'],
+            body: ['DM Sans', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            base: '#0a0a0b',
+            surface: '#121214',
+            elevated: '#1a1a1e',
+            border: '#26262c',
+            brand: {
+              DEFAULT: '#3992FF',
+              50: '#ebf4ff',
+              100: '#d1e7ff',
+              200: '#a3d0ff',
+              300: '#6fb3ff',
+              400: '#3992FF',
+              500: '#1a78f0',
+              600: '#0d5fc4',
+              700: '#0a4a9a',
+              800: '#0a3a7a',
+              900: '#0c2f5e',
+            },
+            accent: {
+              DEFAULT: '#f97316',
+              400: '#fb923c',
+              500: '#f97316',
+              600: '#ea580c',
+            },
+          },
+          animation: {
+            'fade-up': 'fadeUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+            'fade-in': 'fadeIn 0.6s ease forwards',
+            'slide-in': 'slideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+            'pulse-slow': 'pulse 4s ease-in-out infinite',
+            'float': 'float 6s ease-in-out infinite',
+            'shimmer': 'shimmer 3s linear infinite',
+            'gradient-shift': 'gradientShift 8s ease infinite',
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-12px); }
+    }
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    @keyframes gradientShift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+    @keyframes lineFlow {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100vw); }
+    }
+
+    body {
+      background-color: #0a0a0b;
+      color: #e5e5e7;
+      font-family: 'DM Sans', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .glass {
+      background: rgba(18, 18, 20, 0.7);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+    }
+
+    .glow-brand {
+      box-shadow: 0 0 40px -10px rgba(57, 146, 255, 0.4);
+    }
+
+    .grid-pattern {
+      background-image:
+        linear-gradient(rgba(57, 146, 255, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(57, 146, 255, 0.06) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .mesh-bg {
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 0%, rgba(57, 146, 255, 0.15), transparent 50%),
+        radial-gradient(ellipse 60% 50% at 80% 30%, rgba(249, 115, 22, 0.08), transparent 50%),
+        radial-gradient(ellipse 50% 50% at 50% 100%, rgba(57, 146, 255, 0.1), transparent 50%);
+    }
+
+    .racing-line {
+      position: absolute;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(57, 146, 255, 0.6), transparent);
+      animation: lineFlow 4s linear infinite;
+    }
+
+    .code-window {
+      background: #0d0d0f;
+      border: 1px solid #26262c;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .code-window-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #161618;
+      border-bottom: 1px solid #26262c;
+    }
+
+    .code-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #3992FF 0%, #6fb3ff 50%, #3992FF 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: gradientShift 6s ease infinite;
+    }
+
+    .pkg-card {
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .pkg-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(57, 146, 255, 0.5);
+      box-shadow: 0 8px 30px -10px rgba(57, 146, 255, 0.2);
+    }
+
+    .nav-link {
+      position: relative;
+      transition: color 0.2s;
+    }
+    .nav-link::after {
+      content: '';
+      position: absolute;
+      bottom: -4px;
+      left: 0;
+      width: 0;
+      height: 2px;
+      background: #3992FF;
+      transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .nav-link:hover::after {
+      width: 100%;
+    }
+
+    .tab-btn {
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      color: #3992FF;
+      border-color: #3992FF;
+    }
+
+    .bento-card {
+      background: #121214;
+      border: 1px solid #26262c;
+      border-radius: 24px;
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      overflow: hidden;
+      position: relative;
+    }
+    .bento-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(57, 146, 255, 0.08), transparent 40%);
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+    }
+    .bento-card:hover::before {
+      opacity: 1;
+    }
+    .bento-card:hover {
+      border-color: rgba(57, 146, 255, 0.3);
+      transform: translateY(-2px);
+    }
+
+    .noise::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+      opacity: 0.03;
+      pointer-events: none;
+      mix-blend-mode: overlay;
+    }
+
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #0a0a0b; }
+    ::-webkit-scrollbar-thumb { background: #26262c; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3992FF; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body class="font-body">
+
+  <!-- Navigation -->
+  <nav class="fixed top-0 left-0 right-0 z-50 glass border-b border-border/50">
+    <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="#top" class="flex items-center gap-3 group">
+        <img src="favicon.svg" alt="Remix" class="w-9 h-9 rounded-lg transition-transform group-hover:scale-105" />
+        <span class="font-display font-bold text-xl tracking-tight">Remix 3</span>
+      </a>
+      <div class="hidden md:flex items-center gap-8 text-sm font-medium text-zinc-400">
+        <a href="#principles" class="nav-link hover:text-white">设计原则</a>
+        <a href="#goals" class="nav-link hover:text-white">目标</a>
+        <a href="#packages" class="nav-link hover:text-white">包列表</a>
+        <a href="#install" class="nav-link hover:text-white">安装</a>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="https://github.com/remix-run/remix" target="_blank" rel="noopener" class="hidden sm:flex items-center gap-2 px-4 py-2 text-sm font-medium text-zinc-300 hover:text-white border border-border rounded-lg hover:border-brand-400/50 transition-all">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+        <a href="#install" class="px-4 py-2 text-sm font-semibold bg-brand-400 hover:bg-brand-500 text-white rounded-lg transition-all hover:scale-[1.03] active:scale-[0.98]">
+          快速开始
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section id="top" class="relative min-h-screen flex items-center overflow-hidden pt-16 noise">
+    <div class="absolute inset-0 mesh-bg"></div>
+    <div class="absolute inset-0 grid-pattern opacity-50"></div>
+    <div class="racing-line" style="top: 15%; animation-delay: 0s;"></div>
+    <div class="racing-line" style="top: 45%; animation-delay: 1.5s; animation-duration: 6s;"></div>
+    <div class="racing-line" style="top: 75%; animation-delay: 3s; animation-duration: 5s;"></div>
+
+    <!-- Floating orbs -->
+    <div class="absolute top-1/4 right-10 w-72 h-72 bg-brand-400/10 rounded-full blur-3xl animate-pulse-slow"></div>
+    <div class="absolute bottom-1/4 left-10 w-96 h-96 bg-accent/5 rounded-full blur-3xl animate-pulse-slow" style="animation-delay: 2s;"></div>
+
+    <div class="relative z-10 max-w-7xl mx-auto px-6 py-20 grid lg:grid-cols-2 gap-12 items-center">
+      <!-- Left: Text -->
+      <div>
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 mb-6 text-xs font-medium text-brand-300 bg-brand-400/10 border border-brand-400/20 rounded-full animate-fade-in">
+          <span class="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse"></span>
+          正在积极开发中 · Beta 可用
+        </div>
+
+        <h1 class="font-display font-bold text-5xl md:text-6xl lg:text-7xl leading-[1.05] tracking-tighter mb-6 animate-fade-up">
+          <span class="block text-white">Remix 3</span>
+          <span class="block gradient-text">面向未来的</span>
+          <span class="block text-white">全栈 Web 框架</span>
+        </h1>
+
+        <p class="text-lg text-zinc-400 leading-relaxed max-w-xl mb-8 animate-fade-up" style="animation-delay: 0.1s;">
+          基于标准 Web API 构建。模型优先开发，彻底运行时化，零依赖，极致可组合。
+          在 Node.js、Bun、Deno、Cloudflare Workers 中无缝运行。
+        </p>
+
+        <div class="flex flex-wrap items-center gap-4 mb-10 animate-fade-up" style="animation-delay: 0.2s;">
+          <a href="#install" class="px-6 py-3 font-semibold bg-brand-400 hover:bg-brand-500 text-white rounded-xl transition-all hover:scale-[1.03] active:scale-[0.98] glow-brand">
+            立即安装
+          </a>
+          <a href="#principles" class="px-6 py-3 font-semibold text-zinc-300 hover:text-white border border-border hover:border-brand-400/50 rounded-xl transition-all">
+            了解设计理念
+          </a>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-3 gap-6 animate-fade-up" style="animation-delay: 0.3s;">
+          <div>
+            <div class="font-display font-bold text-3xl text-white">40+</div>
+            <div class="text-sm text-zinc-500 mt-1">独立包</div>
+          </div>
+          <div>
+            <div class="font-display font-bold text-3xl text-white">0</div>
+            <div class="text-sm text-zinc-500 mt-1">运行时依赖</div>
+          </div>
+          <div>
+            <div class="font-display font-bold text-3xl gradient-text">Web First</div>
+            <div class="text-sm text-zinc-500 mt-1">标准优先</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Code window -->
+      <div class="animate-fade-up" style="animation-delay: 0.4s;">
+        <div class="code-window glow-brand">
+          <div class="code-window-header">
+            <div class="code-dot bg-red-500/80"></div>
+            <div class="code-dot bg-yellow-500/80"></div>
+            <div class="code-dot bg-green-500/80"></div>
+            <span class="ml-3 text-xs font-mono text-zinc-500">terminal — remix new</span>
+          </div>
+          <div class="p-6 font-mono text-sm leading-relaxed">
+            <div class="text-zinc-500"># 安装 Remix 3 Beta</div>
+            <div class="mt-2">
+              <span class="text-accent-400">$</span>
+              <span class="text-white">npm install</span>
+              <span class="text-brand-300">remix@next</span>
+            </div>
+            <div class="mt-1 text-zinc-600">added 1 package in 1.2s</div>
+
+            <div class="mt-4 text-zinc-500"># 创建新应用</div>
+            <div class="mt-2">
+              <span class="text-accent-400">$</span>
+              <span class="text-white">npx remix@next new</span>
+              <span class="text-brand-300">my-remix-app</span>
+            </div>
+            <div class="mt-1 text-green-400">  Remix app created successfully!</div>
+
+            <div class="mt-4 text-zinc-500"># 启动开发服务器</div>
+            <div class="mt-2">
+              <span class="text-accent-400">$</span>
+              <span class="text-white">cd my-remix-app && npm run dev</span>
+            </div>
+            <div class="mt-1">
+              <span class="text-brand-300">  →</span>
+              <span class="text-zinc-300">Local: http://localhost:3000</span>
+            </div>
+            <div class="mt-1 flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+              <span class="text-green-400">Ready in 289ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scroll indicator -->
+    <div class="absolute bottom-8 left-1/2 -translate-x-1/2 hidden md:flex flex-col items-center gap-2 text-zinc-600 animate-bounce">
+      <span class="text-xs font-medium tracking-wider uppercase">向下滚动</span>
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+    </div>
+  </section>
+
+  <!-- Principles Section -->
+  <section id="principles" class="relative py-24 lg:py-32 px-6">
+    <div class="max-w-7xl mx-auto">
+      <!-- Section header -->
+      <div class="reveal max-w-3xl mb-16">
+        <div class="text-sm font-semibold text-brand-400 mb-3 tracking-wider uppercase">设计原则</div>
+        <h2 class="font-display font-bold text-4xl md:text-5xl tracking-tight text-white mb-4">
+          六大核心原则
+        </h2>
+        <p class="text-lg text-zinc-400 leading-relaxed">
+          在开发 Remix 3 的过程中，我们遵循以下原则。这些原则不是空话——它们直接体现在每一行代码和每一个包的边界划分中。
+        </p>
+      </div>
+
+      <!-- Bento Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+
+        <!-- Card 1: Model-First -->
+        <div class="bento-card p-8 reveal lg:col-span-2" style="transition-delay: 0s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-brand-400/10 flex items-center justify-center border border-brand-400/20">
+              <svg class="w-6 h-6 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">01</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">模型优先开发</h3>
+          <p class="text-zinc-400 leading-relaxed mb-4">
+            AI 从根本上改变了人机交互模式。为 LLM 优化源代码、文档、工具和抽象层。
+            同时，为应用开发可在产品本身中使用模型的抽象，而不仅仅是把模型当作开发工具。
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 text-xs font-medium text-brand-300 bg-brand-400/10 rounded-md">LLM 友好</span>
+            <span class="px-2.5 py-1 text-xs font-medium text-brand-300 bg-brand-400/10 rounded-md">AI 原生</span>
+            <span class="px-2.5 py-1 text-xs font-medium text-brand-300 bg-brand-400/10 rounded-md">上下文优化</span>
+          </div>
+        </div>
+
+        <!-- Card 2: Web API -->
+        <div class="bento-card p-8 reveal" style="transition-delay: 0.1s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center border border-accent/20">
+              <svg class="w-6 h-6 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">02</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">构建于 Web API 之上</h3>
+          <p class="text-zinc-400 leading-relaxed">
+            在整个技术栈中共享抽象层，减少上下文切换消耗。Web API 和 JavaScript 是唯一的全栈生态系统。
+          </p>
+        </div>
+
+        <!-- Card 3: Runtime -->
+        <div class="bento-card p-8 reveal" style="transition-delay: 0.15s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center border border-green-500/20">
+              <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">03</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">彻底运行时化</h3>
+          <p class="text-zinc-400 leading-relaxed">
+            为打包器/编译器做设计会导致糟糕的 API 设计。所有包按"不依赖静态分析"的前提设计，测试无需打包即可运行。
+          </p>
+        </div>
+
+        <!-- Card 4: No deps -->
+        <div class="bento-card p-8 reveal" style="transition-delay: 0.2s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center border border-purple-500/20">
+              <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.618 5.984A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">04</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">避免依赖</h3>
+          <p class="text-zinc-400 leading-relaxed">
+            依赖会把你锁定在别人的路线图上。明智选择依赖，完全封装，预期最终用自有包替换。目标是零依赖。
+          </p>
+        </div>
+
+        <!-- Card 5: Composition -->
+        <div class="bento-card p-8 reveal" style="transition-delay: 0.25s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
+              <svg class="w-6 h-6 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">05</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">主张组合</h3>
+          <p class="text-zinc-400 leading-relaxed">
+            抽象层应当单一用途且可替换。每个包独立使用且有文档。新功能首先尝试作为新包实现。紧密耦合的模块才放入同一包。
+          </p>
+        </div>
+
+        <!-- Card 6: Distribute -->
+        <div class="bento-card p-8 reveal lg:col-span-2" style="transition-delay: 0.3s;">
+          <div class="flex items-start justify-between mb-4">
+            <div class="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+              <svg class="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+            </div>
+            <span class="text-xs font-mono text-zinc-600">06</span>
+          </div>
+          <h3 class="font-display font-bold text-2xl text-white mb-3">保持内聚地分发</h3>
+          <p class="text-zinc-400 leading-relaxed mb-4">
+            极度可组合的生态系统很难学习和使用。Remix 将以单一的 <code class="font-mono text-brand-300 bg-brand-400/10 px-1.5 py-0.5 rounded text-sm">remix</code> 包进行分发，无论分发还是文档都如此。
+          </p>
+          <div class="flex items-center gap-3 p-4 bg-base/50 rounded-xl border border-border">
+            <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/></svg>
+            </div>
+            <div>
+              <div class="text-sm font-medium text-white">单一入口 <code class="font-mono text-brand-300">npm install remix</code></div>
+              <div class="text-xs text-zinc-500 mt-0.5">所有包统一在 <code class="font-mono">remix</code> 伞下，一个包搞定一切</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- Goals / Web Standards Section -->
+  <section id="goals" class="relative py-24 lg:py-32 px-6 border-t border-border/50">
+    <div class="absolute inset-0 grid-pattern opacity-20"></div>
+    <div class="relative z-10 max-w-7xl mx-auto">
+      <div class="reveal max-w-3xl mb-16">
+        <div class="text-sm font-semibold text-accent-400 mb-3 tracking-wider uppercase">目标</div>
+        <h2 class="font-display font-bold text-4xl md:text-5xl tracking-tight text-white mb-4">
+          面向未来的代码
+        </h2>
+        <p class="text-lg text-zinc-400 leading-relaxed">
+          Remix 的代码默认就是可移植的。在服务器端 Web API 可用时，我们加以利用——这意味着代码不仅可复用，而且面向未来。
+        </p>
+      </div>
+
+      <!-- Runtime badges -->
+      <div class="reveal mb-12 flex flex-wrap gap-3">
+        <div class="text-sm text-zinc-500 mr-2 flex items-center">运行环境：</div>
+        <span class="px-3 py-1.5 text-sm font-medium text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg">Node.js</span>
+        <span class="px-3 py-1.5 text-sm font-medium text-white bg-zinc-800 border border-zinc-700 rounded-lg">Bun</span>
+        <span class="px-3 py-1.5 text-sm font-medium text-zinc-300 bg-zinc-800/60 border border-zinc-700/60 rounded-lg">Deno</span>
+        <span class="px-3 py-1.5 text-sm font-medium text-orange-400 bg-orange-500/10 border border-orange-500/20 rounded-lg">Cloudflare Workers</span>
+      </div>
+
+      <!-- API comparison grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <!-- Web Streams -->
+        <div class="reveal bento-card p-6 flex items-center gap-5">
+          <div class="w-14 h-14 rounded-2xl bg-brand-400/10 flex items-center justify-center border border-brand-400/20 flex-shrink-0">
+            <svg class="w-7 h-7 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="flex items-center gap-3 mb-1">
+              <h4 class="font-display font-semibold text-lg text-white">Web Streams API</h4>
+              <span class="text-xs px-2 py-0.5 text-green-400 bg-green-500/10 rounded">使用</span>
+            </div>
+            <p class="text-sm text-zinc-500">替代 <code class="font-mono text-red-400/70">node:stream</code></p>
+          </div>
+        </div>
+
+        <!-- Uint8Array -->
+        <div class="reveal bento-card p-6 flex items-center gap-5" style="transition-delay: 0.05s;">
+          <div class="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center border border-accent/20 flex-shrink-0">
+            <svg class="w-7 h-7 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="flex items-center gap-3 mb-1">
+              <h4 class="font-display font-semibold text-lg text-white">Uint8Array</h4>
+              <span class="text-xs px-2 py-0.5 text-green-400 bg-green-500/10 rounded">使用</span>
+            </div>
+            <p class="text-sm text-zinc-500">替代 Node.js 的 <code class="font-mono text-red-400/70">Buffer</code></p>
+          </div>
+        </div>
+
+        <!-- Web Crypto -->
+        <div class="reveal bento-card p-6 flex items-center gap-5" style="transition-delay: 0.1s;">
+          <div class="w-14 h-14 rounded-2xl bg-purple-500/10 flex items-center justify-center border border-purple-500/20 flex-shrink-0">
+            <svg class="w-7 h-7 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="flex items-center gap-3 mb-1">
+              <h4 class="font-display font-semibold text-lg text-white">Web Crypto API</h4>
+              <span class="text-xs px-2 py-0.5 text-green-400 bg-green-500/10 rounded">使用</span>
+            </div>
+            <p class="text-sm text-zinc-500">替代 <code class="font-mono text-red-400/70">node:crypto</code></p>
+          </div>
+        </div>
+
+        <!-- Blob & File -->
+        <div class="reveal bento-card p-6 flex items-center gap-5" style="transition-delay: 0.15s;">
+          <div class="w-14 h-14 rounded-2xl bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 flex-shrink-0">
+            <svg class="w-7 h-7 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="flex items-center gap-3 mb-1">
+              <h4 class="font-display font-semibold text-lg text-white">Blob & File</h4>
+              <span class="text-xs px-2 py-0.5 text-green-400 bg-green-500/10 rounded">使用</span>
+            </div>
+            <p class="text-sm text-zinc-500">替代运行时专属 API</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Package philosophy -->
+      <div class="reveal mt-12 p-8 bento-card">
+        <div class="flex flex-col md:flex-row gap-6 items-start">
+          <div class="flex-1">
+            <h3 class="font-display font-bold text-xl text-white mb-3">每个包的承诺</h3>
+            <p class="text-zinc-400 leading-relaxed mb-4">
+              组成 Remix 的所有包本身也都应该可以独立使用。这迫使我们考虑包边界，并帮助定义可移植、可互操作的公共接口。
+            </p>
+            <ul class="space-y-3">
+              <li class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-brand-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-zinc-300">具有<strong class="text-white">单一职责</strong>——每个包只做一件事</span>
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-brand-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-zinc-300">优先采用 <strong class="text-white">Web 标准</strong>，确保在各 JavaScript 运行时之间的最大互操作性</span>
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-brand-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-zinc-300">标准缺失处，以<strong class="text-white">不打断原有使用</strong>的方式增强，将不兼容风险降到最低</span>
+              </li>
+            </ul>
+          </div>
+          <div class="md:border-l md:border-border md:pl-8 md:max-w-xs">
+            <div class="font-display font-bold text-4xl gradient-text mb-2">40+</div>
+            <div class="text-sm text-zinc-400">独立包，每个都可单独使用，组合成完整的全栈框架</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Packages Section -->
+  <section id="packages" class="relative py-24 lg:py-32 px-6 border-t border-border/50">
+    <div class="max-w-7xl mx-auto">
+      <div class="reveal max-w-3xl mb-12">
+        <div class="text-sm font-semibold text-brand-400 mb-3 tracking-wider uppercase">包列表</div>
+        <h2 class="font-display font-bold text-4xl md:text-5xl tracking-tight text-white mb-4">
+          40+ 独立包
+        </h2>
+        <p class="text-lg text-zinc-400 leading-relaxed">
+          本仓库中的大多数包都是独立的 JavaScript/TypeScript 工具。<code class="font-mono text-brand-300">remix</code> 包将它们统一在一个伞形结构下。
+        </p>
+      </div>
+
+      <!-- Search bar -->
+      <div class="reveal mb-8 flex flex-col sm:flex-row gap-4 items-stretch sm:items-center">
+        <div class="relative flex-1">
+          <svg class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input
+            id="pkgSearch"
+            type="text"
+            placeholder="搜索包名称或描述..."
+            class="w-full pl-12 pr-4 py-3 bg-surface border border-border rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-brand-400/50 focus:ring-2 focus:ring-brand-400/20 transition-all"
+          />
+        </div>
+        <div class="flex gap-2 flex-wrap" id="pkgFilters">
+          <button class="filter-btn active px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="all">全部</button>
+          <button class="filter-btn px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="core">核心</button>
+          <button class="filter-btn px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="middleware">中间件</button>
+          <button class="filter-btn px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="data">数据</button>
+          <button class="filter-btn px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="storage">存储</button>
+          <button class="filter-btn px-3 py-2 text-sm font-medium rounded-lg border transition-all" data-filter="auth">认证</button>
+        </div>
+      </div>
+
+      <!-- Package grid -->
+      <div id="pkgGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Packages will be injected by JS -->
+      </div>
+      <div id="pkgEmpty" class="hidden text-center py-16 text-zinc-500">
+        <svg class="w-12 h-12 mx-auto mb-4 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <p>未找到匹配的包</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Installation Section -->
+  <section id="install" class="relative py-24 lg:py-32 px-6 border-t border-border/50 overflow-hidden">
+    <div class="absolute inset-0 mesh-bg opacity-50"></div>
+    <div class="relative z-10 max-w-5xl mx-auto">
+      <div class="reveal text-center max-w-3xl mx-auto mb-16">
+        <div class="text-sm font-semibold text-accent-400 mb-3 tracking-wider uppercase">安装</div>
+        <h2 class="font-display font-bold text-4xl md:text-5xl tracking-tight text-white mb-4">
+          三步快速开始
+        </h2>
+        <p class="text-lg text-zinc-400 leading-relaxed">
+          安装 Remix 3 Beta，创建新应用，启动开发服务器——不到一分钟。
+        </p>
+      </div>
+
+      <!-- Steps -->
+      <div class="space-y-6">
+        <!-- Step 1 -->
+        <div class="reveal flex flex-col md:flex-row gap-6 items-start">
+          <div class="flex items-center gap-3 md:flex-col md:items-center md:w-32 flex-shrink-0">
+            <div class="w-10 h-10 rounded-full bg-brand-400 text-white font-display font-bold flex items-center justify-center text-lg glow-brand">1</div>
+            <div class="text-sm font-medium text-zinc-400 md:text-center">安装 Remix</div>
+          </div>
+          <div class="flex-1 w-full">
+            <div class="code-window">
+              <div class="code-window-header">
+                <div class="code-dot bg-red-500/80"></div>
+                <div class="code-dot bg-yellow-500/80"></div>
+                <div class="code-dot bg-green-500/80"></div>
+                <div class="ml-3 flex gap-1">
+                  <button class="tab-btn active px-3 py-1 text-xs font-mono rounded border border-transparent" data-tab="npm1">npm</button>
+                  <button class="tab-btn px-3 py-1 text-xs font-mono rounded border border-transparent text-zinc-500" data-tab="pnpm1">pnpm</button>
+                  <button class="tab-btn px-3 py-1 text-xs font-mono rounded border border-transparent text-zinc-500" data-tab="bun1">bun</button>
+                </div>
+              </div>
+              <div class="p-6 font-mono text-sm">
+                <div data-content="npm1" class="tab-content">
+                  <span class="text-accent-400">$</span> <span class="text-white">npm install</span> <span class="text-brand-300">remix@next</span>
+                </div>
+                <div data-content="pnpm1" class="tab-content hidden">
+                  <span class="text-accent-400">$</span> <span class="text-white">pnpm add</span> <span class="text-brand-300">remix@next</span>
+                </div>
+                <div data-content="bun1" class="tab-content hidden">
+                  <span class="text-accent-400">$</span> <span class="text-white">bun add</span> <span class="text-brand-300">remix@next</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="reveal flex flex-col md:flex-row gap-6 items-start" style="transition-delay: 0.1s;">
+          <div class="flex items-center gap-3 md:flex-col md:items-center md:w-32 flex-shrink-0">
+            <div class="w-10 h-10 rounded-full bg-brand-400 text-white font-display font-bold flex items-center justify-center text-lg glow-brand">2</div>
+            <div class="text-sm font-medium text-zinc-400 md:text-center">创建新应用</div>
+          </div>
+          <div class="flex-1 w-full">
+            <div class="code-window">
+              <div class="code-window-header">
+                <div class="code-dot bg-red-500/80"></div>
+                <div class="code-dot bg-yellow-500/80"></div>
+                <div class="code-dot bg-green-500/80"></div>
+                <span class="ml-3 text-xs font-mono text-zinc-500">npx remix new</span>
+              </div>
+              <div class="p-6 font-mono text-sm">
+                <div>
+                  <span class="text-accent-400">$</span> <span class="text-white">npx remix@next new</span> <span class="text-brand-300">my-remix-app</span>
+                </div>
+                <div class="mt-2 text-green-400">  Remix app created successfully!</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="reveal flex flex-col md:flex-row gap-6 items-start" style="transition-delay: 0.2s;">
+          <div class="flex items-center gap-3 md:flex-col md:items-center md:w-32 flex-shrink-0">
+            <div class="w-10 h-10 rounded-full bg-brand-400 text-white font-display font-bold flex items-center justify-center text-lg glow-brand">3</div>
+            <div class="text-sm font-medium text-zinc-400 md:text-center">启动开发</div>
+          </div>
+          <div class="flex-1 w-full">
+            <div class="code-window">
+              <div class="code-window-header">
+                <div class="code-dot bg-red-500/80"></div>
+                <div class="code-dot bg-yellow-500/80"></div>
+                <div class="code-dot bg-green-500/80"></div>
+                <span class="ml-3 text-xs font-mono text-zinc-500">npm run dev</span>
+              </div>
+              <div class="p-6 font-mono text-sm">
+                <div>
+                  <span class="text-accent-400">$</span> <span class="text-white">cd my-remix-app && npm run dev</span>
+                </div>
+                <div class="mt-2 text-zinc-300">  <span class="text-brand-300">→</span> Local: <span class="text-white">http://localhost:3000</span></div>
+                <div class="mt-1 flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                  <span class="text-green-400">Ready in 289ms</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preview build note -->
+      <div class="reveal mt-12 p-6 bento-card">
+        <div class="flex items-start gap-4">
+          <div class="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center border border-accent/20 flex-shrink-0">
+            <svg class="w-5 h-5 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          </div>
+          <div class="flex-1">
+            <h4 class="font-display font-semibold text-white mb-2">体验最前沿的预览构建</h4>
+            <p class="text-sm text-zinc-400 mb-3">我们也会将最新的 <code class="font-mono text-brand-300">main</code> 分支构建到 <code class="font-mono text-brand-300">preview/main</code> 分支，可用 pnpm（9+）直接安装：</p>
+            <div class="code-window">
+              <div class="p-4 font-mono text-xs sm:text-sm overflow-x-auto">
+                <div class="text-zinc-500"># 安装完整 Remix</div>
+                <div class="mt-1"><span class="text-accent-400">$</span> <span class="text-white">pnpm install</span> <span class="text-brand-300">"remix-run/remix#preview/main&path:packages/remix"</span></div>
+                <div class="mt-3 text-zinc-500"># 或只安装单个包</div>
+                <div class="mt-1"><span class="text-accent-400">$</span> <span class="text-white">pnpm install</span> <span class="text-brand-300">"remix-run/remix#preview/main&path:packages/fetch-router"</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Agent Skills Section -->
+  <section class="relative py-24 px-6 border-t border-border/50">
+    <div class="max-w-5xl mx-auto">
+      <div class="reveal bento-card p-8 md:p-12">
+        <div class="grid md:grid-cols-[auto_1fr] gap-6 items-start">
+          <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center glow-brand">
+            <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <div>
+            <div class="text-sm font-semibold text-brand-400 mb-2 tracking-wider uppercase">Agent 技能</div>
+            <h3 class="font-display font-bold text-2xl text-white mb-3">用于构建应用的 Agent 技能</h3>
+            <p class="text-zinc-400 leading-relaxed mb-4">
+              从该仓库开始构建 Remix 3 应用的 Agent 应使用 <code class="font-mono text-brand-300">remix</code> 应用技能。CLI 的预打包步骤会将该技能复制到应用模板中，这样生成的应用就可以使用相同的指引。
+            </p>
+            <a href="https://github.com/remix-run/remix/blob/main/.agents/skills/remix/SKILL.md" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-brand-300 bg-brand-400/10 border border-brand-400/20 rounded-lg hover:bg-brand-400/20 transition-all">
+              查看 SKILL.md
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="relative py-24 lg:py-32 px-6 overflow-hidden">
+    <div class="absolute inset-0 mesh-bg"></div>
+    <div class="absolute inset-0 grid-pattern opacity-30"></div>
+    <div class="racing-line" style="top: 30%; animation-delay: 0s;"></div>
+    <div class="racing-line" style="top: 60%; animation-delay: 2s; animation-duration: 7s;"></div>
+
+    <div class="relative z-10 max-w-4xl mx-auto text-center">
+      <div class="reveal">
+        <h2 class="font-display font-bold text-4xl md:text-6xl tracking-tighter text-white mb-6">
+          准备好<span class="gradient-text">开始构建</span>了吗？
+        </h2>
+        <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mx-auto mb-10">
+          Remix 3 正在积极开发中。安装 Beta 版本，或从 GitHub 获取最前沿的预览构建。
+          我们欢迎你的贡献——提出 issue 或提交 pull request。
+        </p>
+        <div class="flex flex-wrap items-center justify-center gap-4">
+          <a href="https://github.com/remix-run/remix" target="_blank" rel="noopener" class="px-8 py-4 font-semibold bg-brand-400 hover:bg-brand-500 text-white rounded-xl transition-all hover:scale-[1.03] active:scale-[0.98] glow-brand">
+            在 GitHub 上查看
+          </a>
+          <a href="https://github.com/remix-run/remix/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="px-8 py-4 font-semibold text-zinc-300 hover:text-white border border-border hover:border-brand-400/50 rounded-xl transition-all">
+            参与贡献
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="relative border-t border-border px-6 py-12">
+    <div class="max-w-7xl mx-auto">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
+        <div class="md:col-span-2">
+          <div class="flex items-center gap-3 mb-4">
+            <img src="favicon.svg" alt="Remix" class="w-9 h-9 rounded-lg" />
+            <span class="font-display font-bold text-xl tracking-tight text-white">Remix 3</span>
+          </div>
+          <p class="text-sm text-zinc-500 leading-relaxed max-w-sm">
+            基于标准 Web API 构建的全栈 Web 框架。模型优先开发，彻底运行时化，零依赖，极致可组合。
+          </p>
+        </div>
+        <div>
+          <h5 class="text-sm font-semibold text-white mb-3">资源</h5>
+          <ul class="space-y-2 text-sm">
+            <li><a href="https://github.com/remix-run/remix" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">GitHub 仓库</a></li>
+            <li><a href="https://github.com/remix-run/remix/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">贡献指南</a></li>
+            <li><a href="https://remix.run/blog/wake-up-remix" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">博客：Wake Up Remix</a></li>
+            <li><a href="https://github.com/remix-run/remix/blob/main/LICENSE" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">许可证</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5 class="text-sm font-semibold text-white mb-3">包</h5>
+          <ul class="space-y-2 text-sm">
+            <li><a href="#packages" class="text-zinc-500 hover:text-brand-400 transition-colors">查看全部包</a></li>
+            <li><a href="https://www.npmjs.com/package/remix" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">npm</a></li>
+            <li><a href="#install" class="text-zinc-500 hover:text-brand-400 transition-colors">安装指南</a></li>
+            <li><a href="https://github.com/remix-run/remix/blob/main/.agents/skills/remix/SKILL.md" target="_blank" rel="noopener" class="text-zinc-500 hover:text-brand-400 transition-colors">Agent 技能</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="pt-8 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-4">
+        <p class="text-sm text-zinc-600">Remix 3 · 中文文档 · 非官方社区翻译</p>
+        <div class="flex items-center gap-2 text-sm text-zinc-600">
+          <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+          正在积极开发中
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // ---- Package data ----
+    const packages = [
+      { name: 'remix', desc: 'Remix Web 框架', cat: 'core' },
+      { name: 'assert', desc: '兼容 Node assert 的工具，适用于任何 JavaScript 环境', cat: 'core' },
+      { name: 'assets', desc: '基于 Fetch 的服务器，按需编译浏览器 JS/TS 和 CSS 资源', cat: 'core' },
+      { name: 'cli', desc: 'Remix 的命令行界面', cat: 'core' },
+      { name: 'node-fetch-server', desc: '使用 Web fetch API 为 Node.js 构建服务器', cat: 'core' },
+      { name: 'node-tsx', desc: '让 Node.js 支持 TypeScript 和 JSX 语法运行', cat: 'core' },
+      { name: 'terminal', desc: '面向 JavaScript 库和 CLI 的终端输出工具', cat: 'core' },
+      { name: 'test', desc: '面向 JavaScript 和 TypeScript 项目的测试框架', cat: 'core' },
+      { name: 'ui', desc: '带有协调器、组件模型和官方 UI 组件的视图层', cat: 'core' },
+      { name: 'fetch-router', desc: '为 Web Fetch API 打造的极简、可组合路由器', cat: 'core' },
+      { name: 'route-pattern', desc: '用强类型匹配和生成 URL', cat: 'core' },
+      { name: 'response', desc: '面向 Web Fetch API 的响应辅助工具', cat: 'core' },
+      { name: 'html-template', desc: '带自动转义的 HTML 模板标签，适用于 JavaScript', cat: 'core' },
+      { name: 'headers', desc: '在 JavaScript 中处理 HTTP 头部的工具集', cat: 'core' },
+      { name: 'cookie', desc: '在 JavaScript 中处理 Cookie 的工具集', cat: 'core' },
+      { name: 'mime', desc: '处理 MIME 类型的工具', cat: 'core' },
+      { name: 'async-context-middleware', desc: '用于在 AsyncLocalStorage 中存储请求上下文的中间件', cat: 'middleware' },
+      { name: 'auth-middleware', desc: 'Remix 可插拔的身份验证中间件', cat: 'middleware' },
+      { name: 'compression-middleware', desc: '用于压缩 HTTP 响应的中间件', cat: 'middleware' },
+      { name: 'cop-middleware', desc: '在 Fetch API 服务器中实现无令牌跨源保护的中间件', cat: 'middleware' },
+      { name: 'cors-middleware', desc: '在 Fetch API 服务器中处理 CORS 的中间件', cat: 'middleware' },
+      { name: 'csrf-middleware', desc: '在 Fetch API 服务器中实现 CSRF 防护的中间件', cat: 'middleware' },
+      { name: 'form-data-middleware', desc: '用于从请求体解析 FormData 的中间件', cat: 'middleware' },
+      { name: 'logger-middleware', desc: '用于记录 HTTP 请求和响应的中间件', cat: 'middleware' },
+      { name: 'method-override-middleware', desc: '用于从表单数据覆盖 HTTP 请求方法的中间件', cat: 'middleware' },
+      { name: 'session-middleware', desc: '基于 Cookie 存储管理会话的中间件', cat: 'middleware' },
+      { name: 'static-middleware', desc: '从文件系统提供静态文件的中间件', cat: 'middleware' },
+      { name: 'data-schema', desc: '小巧、对齐标准的模式校验', cat: 'data' },
+      { name: 'data-table', desc: '为 JavaScript 打造的、带类型的关联查询工具集', cat: 'data' },
+      { name: 'data-table-mysql', desc: 'remix/data-table 的 MySQL 适配器', cat: 'data' },
+      { name: 'data-table-postgres', desc: 'remix/data-table 的 PostgreSQL 适配器', cat: 'data' },
+      { name: 'data-table-sqlite', desc: 'remix/data-table 的 SQLite 适配器', cat: 'data' },
+      { name: 'auth', desc: 'Remix 的浏览器登录、OAuth 和 OIDC 辅助工具', cat: 'auth' },
+      { name: 'session', desc: 'JavaScript 的会话管理', cat: 'auth' },
+      { name: 'session-storage-memcache', desc: 'remix/session 的 Memcache 会话存储', cat: 'storage' },
+      { name: 'session-storage-redis', desc: 'remix/session 的 Redis 会话存储', cat: 'storage' },
+      { name: 'file-storage', desc: 'JavaScript File 对象的键值存储', cat: 'storage' },
+      { name: 'file-storage-s3', desc: 'remix/file-storage 的 S3 后端', cat: 'storage' },
+      { name: 'fs', desc: '使用 Web File API 的文件系统工具', cat: 'storage' },
+      { name: 'lazy-file', desc: '为 JavaScript 提供的惰性、流式文件', cat: 'storage' },
+      { name: 'fetch-proxy', desc: '面向 Web Fetch API 的 HTTP 代理', cat: 'core' },
+      { name: 'form-data-parser', desc: 'request.formData() 的封装，支持流式文件上传处理', cat: 'core' },
+      { name: 'multipart-parser', desc: '在任何 JavaScript 环境中都快速高效的 multipart 流解析器', cat: 'core' },
+      { name: 'tar-parser', desc: '在任何 JavaScript 环境中都快速高效的 tar 流解析器', cat: 'core' },
+    ];
+
+    // ---- Render packages ----
+    const pkgGrid = document.getElementById('pkgGrid');
+    const pkgEmpty = document.getElementById('pkgEmpty');
+    const pkgSearch = document.getElementById('pkgSearch');
+    let currentFilter = 'all';
+
+    const catColors = {
+      core: { text: 'text-brand-300', bg: 'bg-brand-400/10', label: '核心' },
+      middleware: { text: 'text-purple-300', bg: 'bg-purple-500/10', label: '中间件' },
+      data: { text: 'text-cyan-300', bg: 'bg-cyan-500/10', label: '数据' },
+      storage: { text: 'text-orange-300', bg: 'bg-orange-500/10', label: '存储' },
+      auth: { text: 'text-green-300', bg: 'bg-green-500/10', label: '认证' },
+    };
+
+    function renderPackages() {
+      const query = pkgSearch.value.toLowerCase().trim();
+      const filtered = packages.filter(pkg => {
+        const matchCat = currentFilter === 'all' || pkg.cat === currentFilter;
+        const matchQuery = !query || pkg.name.toLowerCase().includes(query) || pkg.desc.toLowerCase().includes(query);
+        return matchCat && matchQuery;
+      });
+
+      if (filtered.length === 0) {
+        pkgGrid.innerHTML = '';
+        pkgEmpty.classList.remove('hidden');
+        return;
+      }
+      pkgEmpty.classList.add('hidden');
+
+      pkgGrid.innerHTML = filtered.map((pkg, i) => {
+        const c = catColors[pkg.cat];
+        return `
+          <a href="https://github.com/remix-run/remix/blob/main/packages/${pkg.name}" target="_blank" rel="noopener"
+             class="pkg-card group block p-5 bg-surface border border-border rounded-xl animate-fade-in"
+             style="animation-delay: ${i * 30}ms;">
+            <div class="flex items-center justify-between mb-2">
+              <code class="font-mono text-sm font-semibold text-white group-hover:text-brand-400 transition-colors">${pkg.name}</code>
+              <span class="text-xs px-2 py-0.5 ${c.text} ${c.bg} rounded font-medium">${c.label}</span>
+            </div>
+            <p class="text-sm text-zinc-500 leading-relaxed">${pkg.desc}</p>
+          </a>
+        `;
+      }).join('');
+    }
+
+    // Search
+    pkgSearch.addEventListener('input', renderPackages);
+
+    // Filters
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.classList.add('text-zinc-400', 'border-border', 'hover:text-white', 'hover:border-brand-400/50');
+      if (btn.classList.contains('active')) {
+        btn.classList.remove('text-zinc-400', 'border-border');
+        btn.classList.add('text-brand-400', 'border-brand-400');
+      }
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => {
+          b.classList.remove('active', 'text-brand-400', 'border-brand-400');
+          b.classList.add('text-zinc-400', 'border-border');
+        });
+        btn.classList.add('active', 'text-brand-400', 'border-brand-400');
+        btn.classList.remove('text-zinc-400', 'border-border');
+        currentFilter = btn.dataset.filter;
+        renderPackages();
+      });
+    });
+
+    renderPackages();
+
+    // ---- Installation tabs ----
+    document.querySelectorAll('.code-window').forEach(win => {
+      const tabs = win.querySelectorAll('.tab-btn');
+      if (tabs.length === 0) return;
+      const contents = win.querySelectorAll('.tab-content');
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          tabs.forEach(t => {
+            t.classList.remove('active', 'text-brand-400');
+            t.classList.add('text-zinc-500');
+          });
+          tab.classList.add('active', 'text-brand-400');
+          tab.classList.remove('text-zinc-500');
+          contents.forEach(c => {
+            if (c.dataset.content === tab.dataset.tab) {
+              c.classList.remove('hidden');
+            } else {
+              c.classList.add('hidden');
+            }
+          });
+        });
+      });
+    });
+
+    // ---- Scroll reveal ----
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -60px 0px' });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // ---- Bento card mouse tracking ----
+    document.querySelectorAll('.bento-card').forEach(card => {
+      card.addEventListener('mousemove', (e) => {
+        const rect = card.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        card.style.setProperty('--mx', x + '%');
+        card.style.setProperty('--my', y + '%');
+      });
+    });
+  </script>
+
+</body>
+</html>

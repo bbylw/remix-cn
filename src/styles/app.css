@@ -13,13 +13,34 @@
     U+FFFD;
 }
 
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwg.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF,
+    U+FFFD;
+}
+
 :root {
   --color-fd-primary: #1d63d1;
   --landing-max: 1200px;
+  --lp-surface: #ffffff;
+  --lp-surface-2: #f5f6f8;
+  --lp-line: #e2e5e9;
+  --lp-line-strong: #c9ced5;
+  --lp-muted: #57606c;
 }
 
 .dark {
   --color-fd-primary: #4d9bff;
+  --lp-surface: #16181d;
+  --lp-surface-2: #101216;
+  --lp-line: #262b33;
+  --lp-line-strong: #3a414c;
+  --lp-muted: #9aa4b2;
 }
 
 html {
@@ -39,14 +60,20 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* CJK glyphs must not inherit negative tracking: it visibly collides ideographs. */
 .font-display {
-  font-family: 'Space Grotesk', ui-sans-serif, system-ui, 'PingFang SC', sans-serif;
-  letter-spacing: -0.03em;
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  letter-spacing: 0;
+}
+
+.tracking-display {
+  letter-spacing: -0.02em;
 }
 
 .font-mono-code {
   font-family:
     'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-variant-ligatures: none;
 }
 
 .landing-wrap {
@@ -56,25 +83,25 @@ body {
   padding-inline: 1.25rem;
 }
 
+:where(a, button, [role='tab']):focus-visible {
+  outline: 2px solid var(--color-fd-primary);
+  outline-offset: 2px;
+}
+
 .hero-grid {
   background-image:
-    linear-gradient(to right, rgba(127, 127, 127, 0.09) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(127, 127, 127, 0.09) 1px, transparent 1px);
+    linear-gradient(to right, rgba(127, 127, 127, 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(127, 127, 127, 0.07) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black 20%, transparent 75%);
 }
 
 .hero-glow {
-  background:
-    radial-gradient(45rem 24rem at 50% -6rem, rgba(57, 146, 255, 0.22), transparent 70%),
-    radial-gradient(28rem 18rem at 82% 8%, rgba(249, 115, 22, 0.1), transparent 70%);
-}
-
-.text-gradient {
-  background: linear-gradient(180deg, var(--color-fd-foreground) 20%, rgba(127, 127, 127, 0.75));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  background: radial-gradient(
+    52rem 26rem at 50% -8rem,
+    color-mix(in srgb, var(--color-fd-primary) 18%, transparent),
+    transparent 70%
+  );
 }
 
 .card-lift {
@@ -86,14 +113,62 @@ body {
 }
 
 .card-lift:hover {
-  transform: translateY(-3px);
-  border-color: color-mix(in srgb, var(--color-fd-primary) 45%, var(--color-fd-border));
-  box-shadow: 0 18px 40px -24px rgba(57, 146, 255, 0.55);
+  transform: translateY(-2px);
+  border-color: var(--lp-line-strong);
+  box-shadow: 0 16px 36px -26px color-mix(in srgb, var(--color-fd-primary) 60%, transparent);
 }
 
 .dot-grid {
-  background-image: radial-gradient(rgba(127, 127, 127, 0.28) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(127, 127, 127, 0.22) 1px, transparent 1px);
   background-size: 18px 18px;
+}
+
+.lp-editor .code-line {
+  display: block;
+  min-height: 1.5rem;
+}
+
+.lp-editor .code-gutter {
+  display: inline-block;
+  min-width: 3.25rem;
+  padding-right: 1.1rem;
+  text-align: right;
+  color: #454c56;
+  user-select: none;
+}
+
+.lp-editor .code-text {
+  white-space: pre;
+}
+
+.tok-comment {
+  color: #7d8590;
+  font-style: italic;
+}
+.tok-string {
+  color: #a5d6ff;
+}
+.tok-keyword {
+  color: #ff7b72;
+}
+.tok-literal,
+.tok-number {
+  color: #79c0ff;
+}
+.tok-tag {
+  color: #7ee787;
+}
+.tok-type {
+  color: #ffa657;
+}
+.tok-fn {
+  color: #d2a8ff;
+}
+.tok-prop {
+  color: #79c0ff;
+}
+.tok-punct {
+  color: #9aa4b2;
 }
 
 @media (prefers-reduced-motion: reduce) {

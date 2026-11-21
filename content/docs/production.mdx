@@ -1,0 +1,350 @@
+---
+title: 生产环境
+description: 如何配置、启动、缓存、观测并关闭生产环境中的 Remix 应用。
+icon: ServerCog
+---
+
+生产环境的 Remix 应用仍然是运行时适配器后面的 Fetch 处理器。
+部署工作配置该适配器、初始化持久服务、分配缓存策略并关闭资源，而不是发明另一套应用架构。
+
+## 运行生成的 Node 服务器
+
+starter 用 `node --import remix/node-tsx server.ts` 运行 TypeScript 源码，
+并通过 `remix/node-fetch-server` 适配 `router.fetch()`：
+
+```ts filename=server.ts
+import * as http from "node:http";
+import { createRequestListener } from "remix/node-fetch-server";
+
+import { router } from "./app/router.ts";
+
+const port = Number.parseInt(process.env.PORT ?? "44100", 10);
+
+const server = http.createServer(
+  createRequestListener(router.fetch, {
+    trustProxy: process.env.TRUST_PROXY === "true",
+    onError(error) {
+      console.error("Unhandled error", error);
+      return new Response("Internal Server Error", { status: 500 });
+    },
+  }),
+);
+
+server.listen(port, () => {
+  console.log(`Listening on http://localhost:${port}`);
+});
+```
+
+保留该服务器适用于长期运行的 Node 主机、容器或 VPS。部署到以下环境时改用对应适配器：
+
+- **Bun**：`Bun.serve({ fetch: router.fetch })`
+- **Deno**：`Deno.serve({ port }, router.fetch)`
+- **Cloudflare Workers**：`export default { fetch: (request, env) => router.fetch(request) }`
+- **无服务器 Node 平台**：导出把 `Request` 转给 `router.fetch()` 的处理器
+
+运行时适配器只负责桥接；路由器、中间件与 action 的代码不变。
+注意中间件栈的可移植性：静态文件与压缩中间件使用 Node 文件系统与 zlib，
+在 Worker 上应改用平台提供的静态资源与压缩。
+
+TypeScript 由 `node-tsx` 在运行时转换，**不做类型检查**。生产构建流程仍应单独运行
+`tsc --noEmit`。
+
+## 启动时校验环境变量与密钥
+
+只读取一次配置，校验必需的端口、来源、数据库 URL、会话密钥与提供者凭据；
+缺少必需值时在开始监听前失败：
+
+```ts filename=app/env.ts
+function required(name: string): string {
+  let value = process.env[name];
+  if (value == null || value.trim() === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+export let env = {
+  nodeEnv: process.env.NODE_ENV ?? "development",
+  port: Number.parseInt(process.env.PORT ?? "44100", 10),
+  appOrigin: new URL(required("APP_ORIGIN")),
+  databaseUrl: required("DATABASE_URL"),
+  sessionSecret: required("SESSION_SECRET"),
+  trustProxy: process.env.TRUST_PROXY === "true",
+};
+```
+
+- 在 `server.ts` 的最顶部导入该模块，让缺失配置在监听前就抛错。
+- 测试之外绝不要回退到演示密钥；本地开发用 `.env` 或 shell 环境提供。
+- 不要把密钥写进代码、日志、错误响应或客户端资源。浏览器可达代码只能看到公开变量。
+- 校验 `APP_ORIGIN` 等 URL 的形状，避免启动后每个请求才失败。
+
+## 配置主机、TLS 与受信任代理
+
+`createRequestListener` 接受固定主机/协议选项：
+
+```ts
+createRequestListener(router.fetch, {
+  host: process.env.PUBLIC_HOST,     // 例如 "albums.example.com:443"
+  protocol: "https:",                // 固定为 "https:"
+});
+```
+
+固定选项优先于代理头。只有当应用**只能**通过会覆盖转发头的代理访问时才启用 `trustProxy`；
+否则客户端可以伪造公开 URL、协议与地址。可识别的头包括 `Forwarded`、
+`X-Forwarded-Proto`、`X-Forwarded-Host`、`X-Forwarded-For`。
+
+TLS 通常由前置代理终止；需要 Node 自己终止时使用 `node:https`：
+
+```ts
+import * as https from "node:https";
+import * as fs from "node:fs";
+
+let server = https.createServer(
+  {
+    key: fs.readFileSync("private-key.pem"),
+    cert: fs.readFileSync("certificate.pem"),
+  },
+  createRequestListener(router.fetch),
+);
+```
+
+代理终止 HTTPS 时，会话中间件的 `secure` Cookie 判断依赖请求 URL；
+确保代理传递原始协议，或显式配置 `secure: true`。
+
+## 先初始化再监听，然后只关闭一次
+
+在接受流量前连接共享存储、运行迁移并构造长生命周期路由器或资源服务器：
+
+```ts filename=server.ts
+import { migrateDatabase } from "./app/db.ts";
+import { assets } from "./app/assets.ts";
+
+await migrateDatabase();
+
+let server = http.createServer(createRequestListener(router.fetch));
+server.listen(env.port);
+```
+
+在 `SIGINT` 与 `SIGTERM` 上停止新连接，按部署的宽限期关闭活动连接，
+然后精确一次地关闭资源监视器、数据库客户端、缓存与其他自有资源：
+
+```ts filename=server.ts
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`Received ${signal}, shutting down`);
+
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+
+  await assets.close();
+  await db.close();
+
+  process.exit(0);
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+```
+
+`assets.close()` 要在 HTTP 服务器关闭后调用，否则监视中的资源服务器会保持进程存活。
+如果数据库实例由应用从配置创建，它拥有连接池，关闭时调用 `db.close()`。
+设置关闭超时（例如 10 秒）以防连接不释放导致进程挂住。
+
+多进程部署中，在进程接受请求**之前**作为部署步骤运行一次迁移，
+不要让每个副本同时迁移。
+
+## 选择进程安全的存储
+
+内存会话、进程本地缓存与本地上传目录不会自动跨副本工作。
+当状态必须在重启后存活或在应用进程之间移动时：
+
+| 状态       | 单机可用                         | 多副本 / 重启存活                         |
+| ---------- | -------------------------------- | ----------------------------------------- |
+| 会话       | 内存、文件系统、Cookie           | Redis、Memcache、数据库、共享卷           |
+| 上传文件   | `file-storage/fs`                | `file-storage/s3` 或兼容对象存储          |
+| 缓存       | 进程内 Map                       | Redis 或平台缓存                          |
+| 限流计数   | 进程内                           | Redis 等共享计数器                        |
+
+会话存储后端接口一致，切换后端时 action 代码不变。上传的 `FileStorage` 接口同理。
+
+## 按响应类型分配缓存策略
+
+不同响应需要不同的缓存语义：
+
+| 响应类型                       | 建议策略                                                         |
+| ------------------------------ | ---------------------------------------------------------------- |
+| 带指纹的生产资源               | `public, max-age=31536000, immutable`                            |
+| 静态文件 / 磁盘文件            | ETag 或 `Last-Modified` + 有界 `max-age`，支持条件与范围请求     |
+| 个性化 HTML                    | `private, no-store`（或至少 `private, max-age=0, must-revalidate`） |
+| 公开、可共享的 HTML            | 较短的 `s-maxage` + `stale-while-revalidate`                     |
+| API JSON（含用户数据）         | `private, no-store`                                              |
+
+```tsx
+return context.render(<AlbumPage album={album} />, {
+  headers: {
+    "Cache-Control": "private, no-store",
+  },
+});
+```
+
+文件响应使用 `createFileResponse(file, request, { cacheControl })`。
+带用户身份的内容要加 `Vary: Cookie` 或 `Vary: Authorization`；
+CORS 反射来源时添加 `Vary: Origin`。
+
+不要把带会话或个人数据的 HTML 放进共享 CDN 缓存。需要 CDN 时，
+使用 `private` 或按 Cookie 拆分缓存键。
+
+## 压缩但不破坏流或范围
+
+`compression()` 从 `Accept-Encoding` 协商 `br`、`gzip`、`deflate`，并跳过：
+
+- 已压缩的响应
+- 声明 `Accept-Ranges: bytes` 的响应（避免破坏范围请求）
+- 小于阈值（默认 1024 字节，且仅在存在 `Content-Length` 时判断）的响应
+- 不可压缩的 MIME 类型（默认使用 `remix/mime` 的 `isCompressibleMimeType`）
+
+```ts filename=app/router.ts
+import { compression } from "remix/middleware/compression";
+import { createRouter } from "remix/router";
+
+export const router = createRouter({
+  middleware: [
+    compression({
+      threshold: 2048,
+      encodings: (response) =>
+        response.headers.get("Content-Type")?.startsWith("text/event-stream;")
+          ? ["gzip", "deflate"]
+          : ["br", "gzip", "deflate"],
+    }),
+  ],
+});
+```
+
+对 `text/html` 与 `text/event-stream`，gzip/deflate 使用 `Z_SYNC_FLUSH`，
+Brotli 使用 `BROTLI_OPERATION_FLUSH`，让每个响应块立即可用而不必等流结束。
+显式 `flush` 选项会覆盖这些默认值。
+
+可以用 `zlib` 与 `brotli` 选项微调压缩级别，二者也可以是接收响应的函数。
+对已经很小的响应、图片、视频与已压缩格式不要压缩；对 SSE 避免使用会大幅缓冲的编码。
+
+压缩中间件应放在它需要包裹的响应之前。若在 `render()` 内部替换响应体，
+渲染错误只会报告给 `onError` 而不会 reject `router.fetch()`。
+
+## 让中止贯穿流式工作
+
+把 `request.signal` 传给 `renderToStream()` 与下游 fetch，让断开连接取消未完成的工作：
+
+```tsx
+let stream = renderToStream(<AlbumPage album={album} />, {
+  signal: request.signal,
+  onError(error) {
+    console.error("Render failed", error);
+  },
+});
+
+return new Response(stream, {
+  headers: { "Content-Type": "text/html; charset=utf-8" },
+});
+```
+
+`render()` 中间件会自动把外层请求的取消传给内部 frame 请求，并取消待处理的 frame 渲染。
+用自定义 `resolveFrame` 时也要转发信号。
+
+把中止原因视为预期取消，而不是服务器故障：
+
+```ts
+try {
+  await doWork(request.signal);
+} catch (error) {
+  if (request.signal.aborted) {
+    console.info("Request cancelled", request.signal.reason);
+    return new Response(null, { status: 499 });
+  }
+  throw error;
+}
+```
+
+`499` 不是标准状态码，但常用于日志与内部指标；客户端已断开，响应本身不会被看到。
+
+## 报告错误但不暴露错误
+
+生产环境有几类不同的报告点：
+
+| 报告点                      | 覆盖                                               |
+| --------------------------- | -------------------------------------------------- |
+| `createRequestListener` 的 `onError` | 未捕获的 action / 中间件异常、适配器错误   |
+| `render({ onError })`       | 组件渲染失败、阻塞与流式 frame 失败                |
+| 资源服务器的 `onError`      | 浏览器源码编译失败                                 |
+| 浏览器运行时的 `error` 事件 | 水合、组件、调度器与 frame 失败                    |
+
+各自接入日志/追踪服务，并附加请求 ID：
+
+```ts filename=app/router.ts
+import { render } from "remix/middleware/render";
+
+export const router = createRouter({
+  middleware: [
+    render({
+      assets,
+      onError(error, context) {
+        reportError(error, {
+          requestId: context?.get(RequestId),
+          path: context?.url.pathname,
+        });
+      },
+    }),
+  ],
+});
+```
+
+公开响应只返回通用 `500` 与一个请求 ID，绝不返回堆栈、SQL 或内部路径。
+请求 ID 通过响应头（例如 `X-Request-Id`）返回，用户报障时可以据此关联日志。
+不要记录 Cookie、Authorization 头、密码字段或完整上传内容。
+
+## 添加应用自有的健康检查与可观测性
+
+Remix 提供请求日志与显式错误钩子，而不是部署特定的指标后端。
+围绕所选平台要求的 Fetch 与中间件边界添加健康路由、追踪传播、指标与结构化日志：
+
+```ts filename=app/router.ts
+router.get("/health", () => Response.json({ ok: true }));
+
+router.get("/ready", async () => {
+  try {
+    await db.exec(sql`select 1`);
+    return Response.json({ ok: true });
+  } catch {
+    return Response.json({ ok: false }, { status: 503 });
+  }
+});
+```
+
+- **存活检查**只验证进程能响应，不要依赖数据库。
+- **就绪检查**验证迁移已完成、数据库可达、必需下游可用。
+- 用请求 ID 贯穿日志、错误报告与响应头。
+- 记录时延、状态码分布、5xx 比例与渲染失败次数。
+- 对上传、登录与写操作增加审计日志（不含敏感值）。
+
+`remix/middleware/logger` 可以记录请求与下游响应并提供 `context.logger(...)`，
+把它放在中间件栈靠前的位置，让提前响应与 `404` 也被记录。
+
+## 部署检查清单
+
+- [ ] 运行时版本符合项目要求，生产不依赖开发专用加载器行为
+- [ ] 环境变量与密钥在启动时校验，缺失即失败
+- [ ] 迁移在进程接受流量前完成，且只运行一次
+- [ ] 受信任代理配置正确，`trustProxy` 只在必要时开启
+- [ ] 会话存储与上传存储在副本之间共享，或部署为单副本
+- [ ] 生产资源启用指纹与 `immutable` 缓存
+- [ ] HTML 与用户数据使用 `private` / `no-store`，需要时设置 `Vary`
+- [ ] 压缩不破坏 SSE 与范围请求
+- [ ] `request.signal` 贯穿渲染与下游请求
+- [ ] 服务器、渲染器、资源服务器与浏览器运行时都有错误报告
+- [ ] 优雅关闭：停止新连接、关闭资源、设置超时
+- [ ] 健康与就绪检查接入平台
+- [ ] 对已部署来源执行一次冒烟请求（首页、文档页、一次表单提交）

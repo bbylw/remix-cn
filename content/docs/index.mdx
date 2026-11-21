@@ -1,0 +1,67 @@
+---
+title: Remix 指南
+description: 从请求出发，系统学习 Remix 的路由、渲染、交互、数据、安全与生产部署。
+icon: BookOpen
+---
+
+Remix 是一个全栈 TypeScript 框架：它用类型化的路由与中间件、服务端渲染与浏览器水合的组件模型、
+数据校验与持久化、认证与会话、资源编译和测试，把一次 Web 请求从入口送到响应。
+对大多数 Web 应用来说，`remix` 可以是你 `package.json` 中唯一的运行时依赖。
+
+这些能力由 Web API 串联：路由接收一个 [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request)，
+返回一个 [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response)。
+响应里可以是 Remix 组件渲染出的 HTML，组件也可以在需要处理交互时于浏览器中水合。
+同一份类型化路由定义既能匹配请求，也能为链接、重定向和表单生成 URL。
+
+## 快速开始
+
+用 `remix` CLI 创建一个新项目：
+
+```sh
+npx remix new my-remix-app
+cd my-remix-app
+npm i
+npm run dev
+```
+
+开发服务器默认监听 [http://localhost:44100](http://localhost:44100)。
+
+<Callout title="版本说明">
+  Remix 3 目前处于 Beta 阶段。使用 `npm install remix@next` 安装当前 beta，
+  使用 `npx remix@next new` 创建新应用。本站内容与 [docs.remix.run](https://docs.remix.run/) 保持同步。
+</Callout>
+
+## 阅读路径
+
+第一章是循序渐进的教程，建议从它开始，在自己的项目里跟着做一遍。
+其余章节是按主题划分的指南，可以按需跳读。
+
+<Cards>
+  <Card title="1. 从这里开始" href="/docs/start-here" description="建立心智模型，并完成路由、页面、表单与水合组件。" />
+  <Card title="2. 路由与控制器" href="/docs/routing-and-controllers" description="用类型化路由约定 URL、方法与响应。" />
+  <Card title="3. 请求处理" href="/docs/request-handling" description="中间件流水线、运行时适配与请求上下文。" />
+  <Card title="4. 渲染 UI" href="/docs/rendering-ui" description="组件模型、文档外壳、样式与 HTML。" />
+  <Card title="5. 交互" href="/docs/interactivity" description="水合边界、事件、状态与客户端导航。" />
+  <Card title="6. 用 Frame 流式渲染" href="/docs/streaming-ui-with-frames" description="流式回退与局部刷新。" />
+  <Card title="7. 动画" href="/docs/animation" description="CSS 优先、可中断、尊重减少动效。" />
+  <Card title="8. 数据与校验" href="/docs/data-and-validation" description="模式校验、关系查询与迁移。" />
+  <Card title="9. 表单与变更" href="/docs/forms-and-mutations" description="原生表单、校验失败与增强提交。" />
+  <Card title="10. 认证、会话与安全" href="/docs/auth-sessions-security" description="Cookie、会话、OAuth 与 CSRF。" />
+  <Card title="11. 文件与资源" href="/docs/files-and-assets" description="静态文件、资源编译、上传与存储。" />
+  <Card title="12. 错误与取消" href="/docs/errors-and-cancellation" description="错误边界、流式失败与请求中止。" />
+  <Card title="13. 测试" href="/docs/testing" description="路由测试、组件测试与端到端测试。" />
+  <Card title="14. CLI 与工具链" href="/docs/cli-and-tooling" description="new、routes、doctor、test 与 TypeScript。" />
+  <Card title="15. 生产环境" href="/docs/production" description="启动、缓存、压缩、可观测性与关闭。" />
+</Cards>
+
+## 六个设计原则
+
+1. **模型优先开发（Model-First Development）**。为 LLM 优化源代码、文档、工具与抽象层，
+   并提供在应用内部使用模型的原语。
+2. **构建于 Web API**。基于 `Request`、`Response`、`URL`、`FormData`、Headers、Cookie 与 JavaScript，
+   减少全栈上下文切换，让应用保持可移植。
+3. **彻底运行时化（Religiously Runtime）**。API 不依赖打包器、类型生成或静态分析；
+   路由、中间件、控制器与测试都是普通的运行时代码。
+4. **避免依赖**。谨慎选择依赖，将其封装在自己的边界内，并逐步用专注的自有包替换。
+5. **主张组合**。每个包单一职责、可替换、可独立使用；紧密耦合的模块才放在一起。
+6. **保持内聚地分发**。所有可组合的部分通过一个 `remix` 包和一条文档路径分发。

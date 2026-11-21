@@ -1,0 +1,350 @@
+---
+title: 表单与变更
+description: 原生表单、action 响应、校验失败、重定向与增强变更如何配合。
+icon: TextCursorInput
+---
+
+Remix 中的变更从提交到路由 action 的原生 HTML 表单开始。本章用
+`/albums/:albumId/edit` 的专辑编辑表单，讲解解析提交、用 `400` 响应渲染字段错误、
+保存有效输入并用 `303` 重定向、在浏览器运行时启动后显示 pending 反馈，
+以及提交 GET 和 POST 之外的方法。
+
+## 从原生表单开始
+
+`form("/albums/:albumId/edit")` 路由在同一 URL 上配对两个 action。
+GET 的 `index` action 加载要编辑的专辑，POST 的 `action` 处理器解析并保存提交。
+用一个控制器映射两者，例如 `router.map(routes.albums.edit, albumsEditController)`。
+
+渲染带命名输入和提交按钮的原生 `<form method="post">`。禁用 JavaScript 时，
+浏览器仍会把这些字段发给 action 并显示其响应。
+`remix/middleware/form-data` 的 [`formData()` 中间件](/docs/request-handling)
+在 action 运行前解析请求体，并以 `context.formData` 提供。
+
+## 加载编辑表单
+
+`index` action 加载专辑，缺失时返回 `404`，并渲染编辑页。这些例子从
+[数据库中间件放到请求上下文](/docs/data-and-validation)的 `context.db` 读取，
+`albums` 表定义在 `app/data/tables.ts`：
+
+```tsx filename=app/actions/albums/edit/controller.tsx lines=[3,9-14]
+import { createController } from "remix/router";
+
+import { albums } from "../../../data/tables.ts";
+import { routes } from "../../../routes.ts";
+import { AlbumEditPage } from "./page.tsx";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async index(context) {
+      let album = await context.db.find(albums, context.params.albumId);
+      if (album === null) return new Response("Album not found", { status: 404 });
+
+      return context.render(<AlbumEditPage album={album} />);
+    },
+    async action(context) {
+      /* ... */
+    },
+  },
+});
+```
+
+`/albums/thriller/edit` 现在会以专辑存储的值渲染表单。
+
+## 把校验失败连同表单返回
+
+页面需要区分存储的专辑与未成功的编辑。给 `AlbumEditPage` 可选的 `values` 与 `issues` props：
+
+```tsx filename=app/actions/albums/edit/page.tsx lines=[1,10-11,22,28,31-33,41-42,44-45,47]
+import type { Issue } from "remix/data-schema";
+import type { Handle } from "remix/component";
+
+import type { Album } from "../../../data/tables.ts";
+import { routes } from "../../../routes.ts";
+import { Document } from "../../document.tsx";
+
+interface AlbumEditPageProps {
+  album: Album;
+  values?: { title: string; artist: string; year: string };
+  issues?: readonly Issue[];
+}
+
+const fields = [
+  { name: "title", label: "Title" },
+  { name: "artist", label: "Artist" },
+  { name: "year", label: "Year" },
+] as const;
+
+export function AlbumEditPage(handle: Handle<AlbumEditPageProps>) {
+  return () => {
+    let { album, values, issues = [] } = handle.props;
+
+    return (
+      <Document title={`Edit ${album.title} — Albums`}>
+        <main>
+          <h1>Edit {album.title}</h1>
+          {issues.length > 0 && <p role="alert">Please correct the fields below.</p>}
+          <form method="post" action={routes.albums.edit.action.href({ albumId: album.id })}>
+            {fields.map(({ name, label }) => {
+              let issue = issues.find((issue) => issue.path?.[0] === name);
+              let inputId = `album-${name}`;
+              let errorId = `${inputId}-error`;
+
+              return (
+                <div key={name}>
+                  <label htmlFor={inputId}>{label}</label>
+                  <input
+                    id={inputId}
+                    name={name}
+                    defaultValue={values?.[name] ?? String(album[name])}
+                    inputMode={name === "year" ? "numeric" : undefined}
+                    required
+                    aria-invalid={issue ? true : undefined}
+                    aria-describedby={issue ? errorId : undefined}
+                  />
+                  {issue && <p id={errorId}>{issue.message}</p>}
+                </div>
+              );
+            })}
+            <button type="submit">Save album</button>
+          </form>
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+输入初始使用存储的专辑，校验失败后保留提交的 `values`。每个字段显示第一个校验问题，
+并通过 [`aria-describedby`](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-describedby)
+与输入关联，让屏幕阅读器随字段朗读消息。
+
+`required`、`type="email"`、`min`、`pattern` 等原生属性让浏览器在发送请求前
+用[约束校验](https://developer.mozilla.org/en-US/docs/Web/HTML/Guides/Constraint_validation)
+发现简单错误。对于这些属性无法表达的规则，水合组件可以在事件处理器中调用
+[`setCustomValidity()`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setCustomValidity)，
+并在值有效后传空字符串清除。浏览器检查只改善反馈；请求可以绕过它们，因此 action 始终会重新校验提交。
+
+## 解析并保存提交的表单
+
+用 `remix/data-schema/form-data` 的表单数据模式描述表单可以提交的字段。
+这个模式会 trim 标题与艺术家、拒绝空值，并把年份转换为正整数：
+
+```ts filename=app/actions/albums/edit/schema.ts
+import * as s from "remix/data-schema";
+import * as checks from "remix/data-schema/checks";
+import * as coerce from "remix/data-schema/coerce";
+import * as f from "remix/data-schema/form-data";
+
+const albumText = s
+  .string()
+  .transform((value) => value.trim())
+  .pipe(checks.minLength(1));
+
+const albumYear = coerce
+  .number()
+  .refine((value) => Number.isInteger(value) && value > 0, "Enter a positive whole year");
+
+export const albumForm = f.object({
+  title: f.field(albumText),
+  artist: f.field(albumText),
+  year: f.field(albumYear),
+});
+```
+
+在 POST action 中把 `context.formData` 传给 `s.parseSafe(albumForm, context.formData)`。
+`parsed.success` 为 false 时，校验错误在 `parsed.issues` 中；成功时，
+`parsed.value` 包含校验后的字段，文本已 trim、年份为数字。
+
+```tsx filename=app/actions/albums/edit/controller.tsx lines=[5,19-20,30-33,36-43]
+import * as s from "remix/data-schema";
+import { redirect } from "remix/response/redirect";
+import { createController } from "remix/router";
+
+import { albums } from "../../../data/tables.ts";
+import { routes } from "../../../routes.ts";
+import { AlbumEditPage } from "./page.tsx";
+import { albumForm } from "./schema.ts";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async index(context) {
+      let album = await context.db.find(albums, context.params.albumId);
+      if (album === null) return new Response("Album not found", { status: 404 });
+
+      return context.render(<AlbumEditPage album={album} />);
+    },
+    async action(context) {
+      let parsed = s.parseSafe(albumForm, context.formData);
+      if (!parsed.success) {
+        let album = await context.db.find(albums, context.params.albumId);
+        if (album === null) return new Response("Album not found", { status: 404 });
+
+        let values = {
+          title: readText(context.formData, "title"),
+          artist: readText(context.formData, "artist"),
+          year: readText(context.formData, "year"),
+        };
+
+        return context.render(
+          <AlbumEditPage album={album} values={values} issues={parsed.issues} />,
+          { status: 400 },
+        );
+      }
+
+      try {
+        await context.db.update(albums, context.params.albumId, parsed.value);
+      } catch (error) {
+        console.error("Failed to save album:", error);
+        return new Response("Unable to save album", { status: 500 });
+      }
+
+      return redirect(routes.albums.show.href({ albumId: context.params.albumId }), 303);
+    },
+  },
+});
+
+function readText(formData: FormData, name: string): string {
+  let value = formData.get(name);
+  return typeof value === "string" ? value : "";
+}
+```
+
+`readText()` 收集用于显示的文本，不会把缺失条目或文件转换成字符串。
+这些值永远不会成为数据库更新内容；更新仍然来自 `parsed.value`，
+在 trim、强制转换和校验都成功之后。
+
+失败分支直接以 `400` 渲染。重定向回 GET action 会重新加载存储的专辑，
+丢失用户的修改和错误。对于包含敏感字段的表单，要选择返回哪些值：
+密码字段留空，并要求用户重新选择文件。
+
+校验只检查输入形状。保存前还要检查当前用户
+[是否有权编辑这张专辑](/docs/auth-sessions-security)。
+
+## 保存后重定向
+
+解析成功后，`db.update(...)` 把 `parsed.value` 保存到路由 `albumId` 选中的专辑。
+更新失败时，action 在服务端记录错误并返回 `500`，不向浏览器暴露数据库细节。
+
+保存成功后，action 返回
+[`303 See Other`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/303)
+和专辑页面 URL。`303` 告诉浏览器无论原请求方法是什么，都用 GET 请求 `Location` URL。
+这种模式通常称为 POST-重定向-GET：
+
+```txt
+POST /albums/thriller/edit
+  → 更新专辑
+  → 303 Location: /albums/thriller
+GET /albums/thriller
+  → 渲染保存后的专辑
+```
+
+刷新结果页面会重复 GET，而不是再次提交编辑。
+
+要在目标页面显示“Album saved”，在重定向前把消息存为
+[会话 flash 数据](/docs/auth-sessions-security)。它在下一个请求可用，随后被移除。
+
+## 添加 pending 反馈
+
+一旦页面[用 `run()` 启动浏览器运行时](/docs/interactivity)，Remix 会把表单提交作为
+[frame 导航](/docs/streaming-ui-with-frames)处理：把校验响应渲染进页面，
+并在保存成功后跟随重定向。
+
+水合提交按钮，并使用 [`on('rmx:navigation', handler)`](/docs/interactivity)
+显示保存进度。表单其余部分保持服务端渲染。处理器会为该按钮的提交运行，
+包括它是表单默认按钮时的 Enter。链接和其他表单不会启动它的 pending 状态。
+跟随事件的 `finished` promise 可以让保持同一组件挂载的校验响应也被覆盖。
+
+把按钮放在编辑 action 的 `public/` 目录，让
+[资源服务器能把它提供给浏览器](/docs/files-and-assets)：
+
+```tsx filename=app/actions/albums/edit/public/save-button.tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const SaveButton = clientEntry(import.meta.url, function SaveButton(handle: Handle) {
+  let saving = false;
+  let failed = false;
+
+  return () => (
+    <>
+      <button
+        type="submit"
+        mix={on("rmx:navigation", async (event, signal) => {
+          saving = true;
+          failed = false;
+          handle.update();
+          try {
+            await event.finished;
+          } catch {
+            if (!signal.aborted) failed = true;
+          }
+          if (signal.aborted) return;
+          saving = false;
+          handle.update();
+        })}
+      >
+        {saving ? "Saving…" : "Save album"}
+      </button>
+      <span role="status">{failed ? "Couldn’t save the album. Try again." : ""}</span>
+    </>
+  );
+});
+```
+
+然后在原来普通提交按钮的位置渲染 `SaveButton`：
+
+```tsx filename=app/actions/albums/edit/page.tsx
+import { SaveButton } from "./public/save-button.tsx";
+
+// 在 AlbumEditPage 的渲染函数内：
+<form method="post" action={routes.albums.edit.action.href({ albumId: album.id })}>
+  {/* 保留现有字段与校验消息。 */}
+  <SaveButton />
+</form>;
+```
+
+响应渲染并完成导航（包括重定向、滚动与焦点处理）后，`finished` 以一个 `AbortSignal` resolve。
+渲染校验响应也算完成。失败时 reject。取消时以一个已中止的信号 resolve，
+因此会清除 “Saving…” 而不显示失败。显示“Saved!”这类成功反馈前，
+检查返回信号的 `aborted` 标志。
+
+按钮保持可用，让访客可以再次提交。下一次提交或按钮移除会中止先前处理器的信号，
+防止它覆盖更新的状态。
+
+`rmx:navigation` 报告 Remix 已接受的导航。要在原生 `submit` 中取消提交。
+关于提交值与乐观渲染，请参阅[交互](/docs/interactivity)。
+
+## 在路由需要时使用其他 HTTP 方法
+
+HTML 表单只提交 GET 与 POST。如果路由期望 PATCH、PUT 或 DELETE，
+表单仍用 POST，并在隐藏字段中写明目标方法，方法覆盖中间件会在路由匹配前重写请求方法。
+
+对于 PATCH 编辑路由，用 `form("/albums/:albumId/edit", { formMethod: "PATCH" })`
+设置 action 方法，并在 POST 表单中加入这个隐藏字段：
+
+```html
+<input type="hidden" name="_method" value="PATCH" />
+```
+
+在路由器的中间件栈中安装 `remix/middleware/method-override` 的 `methodOverride()`，
+紧跟在表单解析之后：
+
+```ts lines=[2,10]
+// 在 app/router.ts 中：
+import { methodOverride } from "remix/middleware/method-override";
+
+// 保留其他中间件与控制器映射：
+export const router = createRouter({
+  middleware: [
+    staticFiles("./public", { index: false }),
+    loadDatabase(),
+    formData(),
+    methodOverride(),
+    render({ assets }),
+  ],
+});
+```
+
+浏览器发送 POST。解析 `_method` 后，中间件在路由匹配前把 `context.method` 设为 PATCH，
+因此控制器的 `action` 匹配 PATCH 路由。在控制器上安装方法覆盖就太晚了，无法选择路由。
+定义匹配路由时，PUT 与 DELETE 的工作方式相同。

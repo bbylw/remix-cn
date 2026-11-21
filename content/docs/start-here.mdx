@@ -1,0 +1,869 @@
+---
+title: 从这里开始
+description: Remix 的高层介绍，以及一个 Remix 应用背后的心智模型。
+icon: Rocket
+---
+
+## 什么是 Remix？
+
+Remix 是一个用于构建 Web 应用的全栈 TypeScript 框架。它提供类型化的路由与中间件、
+带服务端渲染和浏览器水合的 UI 组件模型、导航、样式与事件原语、数据校验与持久化、
+认证与会话、资源编译，以及测试。对大多数 Web 应用来说，`remix` 可以是你
+`package.json` 中唯一的运行时依赖。
+
+把这些部分连接起来的是 Web API。路由接收一个
+[`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request)，返回一个
+[`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response)。
+响应中可以包含由 Remix 组件渲染出的 HTML；当组件需要处理交互时，它们可以在浏览器中水合。
+同一份类型化路由定义既匹配传入的请求，也为链接、重定向和表单生成 URL。
+
+这些 API 通过 `remix` 包下专注的子路径导入一起分发，它们底层的包也可以独立使用。
+
+Remix 的设计来自六条核心原则：
+
+1. **模型优先开发（Model-First Development）**。Remix 为 LLM 优化源代码、文档、工具与抽象层，
+   并提供在你构建的产品内部使用模型的基元。
+2. **构建于 Web API**。Remix 基于 `Request`、`Response`、`URL`、`FormData`、Headers、
+   Cookie 与 JavaScript，因为共享的平台 API 能减少全栈上下文切换，同时保持应用可移植。
+3. **彻底运行时化（Religiously Runtime）**。Remix API 不依赖打包器、类型生成或静态分析。
+   路由、中间件、控制器与测试都应当作为普通的运行时代码运行。
+4. **避免依赖**。Remix 谨慎选择依赖，把它们封装在自己的边界之后，并在框架需要长期控制时，
+   逐步用专注的自有包替换它们。
+5. **主张组合（Demand Composition）**。Remix 的包单一职责、可替换、可独立使用。
+   你可以随着应用变化增删部件，而紧密耦合的模块则放在一起。
+6. **保持内聚地分发（Distribute Cohesively）**。Remix 通过一个 `remix` 包和一条文档路径
+   分发这些可组合的部分，让生态更易学习、更易使用。
+
+理解 Remix 最快的方式，是横跨整个技术栈构建一个功能：定义一条路由，返回一个服务端渲染的页面，
+处理一次表单提交，再为一个组件接上浏览器交互所需的水合。
+
+<Callout title="本章是教程">
+  每一步都建立在前一步之上，所以请从头开始，并在你自己的应用里跟着操作。
+
+  其余章节是指南。每一章深入一个主题（如路由、表单或测试），可以按任意顺序阅读。
+</Callout>
+
+## 快速开始：创建并运行 Remix 应用
+
+开始一个 Remix 应用最快的方式是使用 `remix` CLI。它会创建一个小型全栈应用，
+包含 Node 服务器、类型化路由、渲染中间件、服务端渲染的首页、由源码提供的资源，
+以及一个会水合的组件。
+
+首先运行：
+
+```sh
+npx remix new my-remix-app
+```
+
+接着安装项目依赖：
+
+```sh
+cd my-remix-app
+npm i
+```
+
+打开 `package.json`，你会看到一个运行时依赖：`remix`。你的应用用这一个包来处理
+服务器适配器、路由、中间件、UI、资源和客户端入口。
+
+```json filename=package.json
+{
+  "name": "my-remix-app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "remix": "^3.0.0"
+  }
+}
+```
+
+最后启动开发服务器：
+
+```sh
+npm run dev
+```
+
+服务器启动时会打印本地 URL。默认情况下，开发服务器监听
+[http://localhost:44100](http://localhost:44100)。
+
+新应用包含一个 [Agent Skill](https://agentskills.io)——一组编码代理在处理 Remix 代码时会加载的指令——
+以及一个可以复制提示词到智能编码环境的首页。`remix` 包也会随附文档：
+`node_modules/remix/INDEX.md` 索引了你所安装版本的全部指南和每个包的 README，
+让你和你的代理读到的文档与代码版本一致。
+
+## 项目导览：代码住在哪里
+
+一个典型的 Remix 应用会让请求流程在文件结构中清晰可见。一个 HTTP 请求进入 `server.ts`，
+交给 `app/router.ts`，穿过中间件，匹配 `app/routes.ts` 中的路由定义，
+由 `app/actions/` 中的路由 action 处理，最后返回一个 Web `Response`。
+通常这个响应是由 Remix 组件生成的 HTML，但同一个 action 也可以返回重定向、JSON、文件、
+流、错误或任何其他 Web 响应。
+
+这条流程让所有代码都有明确的归属：在 `routes.ts` 中定义路由，在 `router.ts` 中连接中间件、
+路由与控制器，在 `actions/` 中处理路由特有的行为，把共享视图与布局放在 `ui/`。
+浏览器可访问的源码放在离它最近的 `public/` 目录旁边，让服务端/浏览器边界在文件结构中一目了然。
+
+```txt
+my-remix-app/
+├── server.ts                  # 当前运行时的请求入口
+└── app/
+    ├── routes.ts              # 路由定义、路由映射与 URL 辅助函数
+    ├── router.ts              # 中间件、路由与控制器映射
+    ├── middleware/            # 请求中间件与上下文提供者
+    ├── actions/               # 控制器、路由 action 与路由局部 UI
+    │   ├── controller.tsx     # 根路由控制器
+    │   ├── document.tsx       # 应用文档外壳
+    │   └── public/
+    │       └── entry.ts       # 启动浏览器运行时
+    ├── ui/                    # 共享视图、布局与 Remix 组件
+    └── assets.ts              # 浏览器模块服务器配置与入口 href
+```
+
+接下来我们会通过构建一个小功能，逐一接触这些文件。唯一不会改动的是 `server.ts`。
+下面是它的简化版本：
+
+```ts filename=server.ts
+import * as http from "node:http";
+import { createRequestListener } from "remix/node-fetch-server";
+
+import { router } from "./app/router.ts";
+
+const requestListener = createRequestListener(router.fetch);
+const server = http.createServer(requestListener);
+
+server.listen(44100, () => {
+  console.log("Server listening on http://localhost:44100");
+});
+```
+
+`server.ts` 是运行时入口。在这个基于 Node 的例子里，它创建 HTTP 服务器，
+把每个 Node 请求适配成 Web `Request`，再传给 `router.fetch(request)`。
+
+## 定义你的第一条路由
+
+在 Remix 中，路由的定义与处理匹配请求的 action 是分开的。在 `app/routes.ts` 中，
+我们定义应用接受的 URL 与 HTTP 方法；在 `app/actions/` 中，控制器决定某条路由匹配后返回什么 `Response`。
+
+因为 URL 住在 `routes.ts` 里，控制器、链接、表单、重定向和测试都导入同一份类型化路由对象，
+而生成 URL 永远不需要加载处理它的代码。
+
+先定义一条查看数字唱片店里不同专辑的路由：
+
+```ts filename=app/routes.ts lines=[6-8]
+import { get, route } from "remix/routes";
+
+export const routes = route({
+  assets: get("/assets/*path"),
+  home: "/",
+  albums: {
+    show: get("/albums/:albumId"),
+  },
+});
+```
+
+这个路由定义做了很多事情：
+
+- 把 `albums` 定义为一个路由分组，把 `show` 定义为代码中引用的路由名。
+- 用 `get()` 限定 `show` 路由，只有 `GET` 请求能匹配。
+- 定义 URL 模式 `'/albums/:albumId'`，因此 `/albums/thriller` 这样的路径可以匹配。
+- 把 `:albumId` 作为路径变量，在 action 中可以通过 `params.albumId` 读取。
+- 提供类型化的 href 构造函数，`routes.albums.show.href({ albumId: 'thriller' })`
+  会返回 `/albums/thriller`。
+
+除了 `:albumId` 这样的路径变量，路由模式还可以表达通配符、可选分组、搜索参数约束、主机名和完整来源。
+
+现在我们在建立 `albums` 路由映射（也就是上面定义的嵌套路由对象）。为了保持组织清晰，
+在 `app/actions/` 中为 albums 相关的一切创建一个目录，并为控制器创建一个文件。
+
+```sh
+mkdir app/actions/albums
+touch app/actions/albums/controller.tsx
+```
+
+这个控制器一开始很小，只处理目前唯一的 `show` action。注意，当我们把 `routes.albums`
+传给 `createController` 时，它会要求 `actions` 中必须提供 `show` 函数。
+`show` 本身接收类型安全的 `params`，因此可以保证 `:albumId` 路径变量对应的 `albumId` 存在。
+
+```tsx filename=app/actions/albums/controller.tsx
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+
+export default createController(routes.albums, {
+  actions: {
+    show(context) {
+      return new Response(`Album: ${context.params.albumId}`);
+    },
+  },
+});
+```
+
+最后，把 albums 路由映射连接到 `app/router.ts` 中的路由器：
+
+```ts filename=app/router.ts lines=[6,13]
+import { createRouter, type RouterContext } from "remix/router";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+
+import controller from "./actions/controller.tsx";
+import albumsController from "./actions/albums/controller.tsx";
+import { assets } from "./assets.ts";
+import { routes } from "./routes.ts";
+
+// ...
+
+router.map(routes, controller);
+router.map(routes.albums, albumsController);
+```
+
+目前 `show` action 返回一个普通的 Web `Response`。在浏览器中访问
+[http://localhost:44100/albums/thriller](http://localhost:44100/albums/thriller)，
+你应该看到这段文本响应：
+
+```txt
+Album: thriller
+```
+
+其他 HTTP 方法与资源还有更多[路由构建器](#route-builders)，把控制器映射到嵌套路由映射也有更多方式。
+
+## 构建你的第一个页面
+
+接下来我们让这个专辑页面更有意思一些：从一个 Remix 组件返回 HTML。
+
+组件是一个接收 `handle`、并返回另一个渲染 JSX 的函数的函数。外层函数是**设置阶段**，
+在组件创建时只运行一次，因此其中声明的普通 JavaScript 变量可以保存局部状态。
+返回的函数是**渲染阶段**，在首次渲染以及之后的每次更新时运行。
+
+稍后我们会再回到[组件模型](/docs/rendering-ui)。
+
+```tsx
+function MyComponent(handle) {
+  // 设置阶段：组件创建时只运行一次。
+  // handle 让组件访问 props 和其他 Remix 组件 API。
+
+  return () => {
+    // 渲染阶段：首次渲染和之后的每次更新都会运行。
+    // 从这里返回 JSX。
+
+    return <div>Hello, Remix</div>;
+  };
+}
+```
+
+现在为专辑页面创建一个简单的 UI。我们使用别处已定义的 `Document` 组件来添加应用外壳：
+
+```sh
+touch app/actions/albums/show-page.tsx
+```
+
+```tsx filename=app/actions/albums/show-page.tsx
+import type { Handle } from "remix/component";
+
+import { Document } from "../document.tsx";
+
+export function AlbumPage(handle: Handle<{ id: string }>) {
+  return () => {
+    return (
+      <Document title="Album — Albums">
+        <main>
+          <h1>{handle.props.id}</h1>
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+要使用这个组件，需要通过[请求上下文渲染它](/docs/rendering-ui)，并从 action 返回响应。
+路由仍然返回 Web `Response`，但 `context.render(...)` 会从组件树创建这个响应，而不是从字符串。
+现在先把匹配到的 `albumId` 传进去，让页面继续显示上一节的 route param。
+`context.render(...)` 来自 [`remix/middleware/render`](/docs/request-handling) 中的 `render()` 中间件，
+它会把组件树[以 HTML 流式输出](/docs/streaming-ui-with-frames)。
+
+```tsx filename=app/actions/albums/controller.tsx lines=[4,9]
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+import { AlbumPage } from "./show-page.tsx";
+
+export default createController(routes.albums, {
+  actions: {
+    show(context) {
+      return context.render(<AlbumPage id={context.params.albumId} />);
+    },
+  },
+});
+```
+
+在这次演示中，我们设置一个小型内存数据库。真实应用会[让 action 访问数据库](/docs/data-and-validation)。
+
+```sh
+touch app/actions/albums/data.ts
+```
+
+```ts filename=app/actions/albums/data.ts
+export type Album = {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+};
+
+let albums: Album[] = [
+  {
+    artist: "Michael Jackson",
+    id: "thriller",
+    title: "Thriller",
+    year: 1983,
+  },
+];
+
+export async function getAlbum(albumId: string) {
+  return albums.find((album) => album.id === albumId);
+}
+
+export async function updateAlbum(albumId: string, values: Partial<Album>) {
+  let album = albums.find((album) => album.id === albumId);
+
+  if (album === undefined) {
+    return undefined;
+  }
+
+  // 模拟网络延迟
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  Object.assign(album, values);
+  return album;
+}
+```
+
+现在可以用 route param “加载”对应的专辑，找不到时返回 `404`，并把专辑数据作为 props 传给组件：
+
+```tsx filename=app/actions/albums/controller.tsx lines=[4-5,9-17]
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+import { getAlbum } from "./data.ts";
+import { AlbumPage } from "./show-page.tsx";
+
+export default createController(routes.albums, {
+  actions: {
+    async show(context) {
+      let album = await getAlbum(context.params.albumId);
+
+      if (album === undefined) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      return context.render(<AlbumPage album={album} />);
+    },
+  },
+});
+```
+
+接着调整 `AlbumPage` 组件来展示专辑数据：
+
+```tsx filename=app/actions/albums/show-page.tsx lines=[3,6,8,11,13-16]
+import type { Handle } from "remix/component";
+
+import type { Album } from "./data.ts";
+import { Document } from "../document.tsx";
+
+export function AlbumPage(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <Document title={`${album.title} — Albums`}>
+        <main>
+          <p>
+            {album.artist} · {album.year}
+          </p>
+          <h1>{album.title}</h1>
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+现在页面会显示专辑标题、艺术家和年份。用 [`css` 函数](/docs/rendering-ui) 和
+[`mix` prop](/docs/interactivity) 让它居中并增加一些间距：
+
+```tsx filename=app/actions/albums/show-page.tsx lines=[2,14-18,20]
+import type { Handle } from "remix/component";
+import { css } from "remix/component";
+
+import type { Album } from "./data.ts";
+import { Document } from "../document.tsx";
+
+export function AlbumPage(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <Document title={`${album.title} — Albums`}>
+        <main
+          mix={css({
+            maxWidth: "44rem",
+            margin: "0 auto",
+            padding: "4rem 1.5rem",
+          })}
+        >
+          <p mix={css({ color: "#666" })}>
+            {album.artist} · {album.year}
+          </p>
+          <h1>{album.title}</h1>
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+再次打开 [http://localhost:44100/albums/thriller](http://localhost:44100/albums/thriller)。
+同一个 URL 现在返回专辑页面。
+
+## 构建你的第一个表单 action
+
+我们已经可以读取并显示专辑了。接下来添加一个表单，以及一个可以更新专辑的 `POST` action。
+
+回到 `routes.ts`，使用 `form()` 路由辅助函数。它会在同一个 URL 上创建两条路由：
+显示表单的 `GET` 路由，以及处理提交的 `POST` 路由。
+
+```ts filename=app/routes.ts lines=[1,8]
+import { form, get, route } from "remix/routes";
+
+export const routes = route({
+  assets: get("/assets/*path"),
+  home: "/",
+  albums: {
+    show: get("/albums/:albumId"),
+    edit: form("/albums/:albumId/edit"),
+  },
+});
+```
+
+在这里，`form('/albums/:albumId/edit')` 会创建：
+
+- `routes.albums.edit.index`，对应 `GET /albums/:albumId/edit`。
+- `routes.albums.edit.action`，对应 `POST /albums/:albumId/edit`。
+
+由于 `albums.edit` 是一个嵌套路由映射，我们创建一个 `edit/` 目录，存放控制器和表单模块。
+
+```sh
+mkdir app/actions/albums/edit
+touch app/actions/albums/edit/controller.tsx app/actions/albums/edit/page.tsx
+```
+
+先搭起控制器骨架：
+
+```tsx filename=app/actions/albums/edit/controller.tsx
+import { createController } from "remix/router";
+
+import { routes } from "../../../routes.ts";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async index() {
+      return new Response();
+    },
+    async action() {
+      return new Response();
+    },
+  },
+});
+```
+
+再把它映射到路由器：
+
+```ts filename=app/router.ts lines=[7,15]
+import { createRouter, type RouterContext } from "remix/router";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+
+import controller from "./actions/controller.tsx";
+import albumsController from "./actions/albums/controller.tsx";
+import albumsEditController from "./actions/albums/edit/controller.tsx";
+import { assets } from "./assets.ts";
+import { routes } from "./routes.ts";
+
+// ...
+
+router.map(routes, controller);
+router.map(routes.albums, albumsController);
+router.map(routes.albums.edit, albumsEditController);
+```
+
+现在创建表单页面。它是一个非常简单的表单：显示现有数据，并向编辑 action 提交 POST 请求。
+
+```tsx filename=app/actions/albums/edit/page.tsx
+import { css } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../routes.ts";
+import { Document } from "../../document.tsx";
+import type { Album } from "../data.ts";
+
+export function AlbumEditPage(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <Document title={`Edit ${album.title} — Albums`}>
+        <main mix={css({ padding: "1rem" })}>
+          <h1>Edit {album.title}</h1>
+          <form
+            action={routes.albums.edit.action.href({ albumId: album.id })}
+            method="post"
+            mix={css({
+              display: "grid",
+              gap: "0.75rem",
+              maxWidth: "fit-content",
+              "& input": {
+                marginLeft: "0.5rem",
+              },
+            })}
+          >
+            <label>
+              Title
+              <input name="title" defaultValue={album.title} required />
+            </label>
+            <label>
+              Artist
+              <input name="artist" defaultValue={album.artist} required />
+            </label>
+            <label>
+              Year
+              <input name="year" defaultValue={album.year} required type="number" />
+            </label>
+            <button type="submit">Save album</button>
+          </form>
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+把组件接到控制器的 `index` action 上，看看表单的实际效果：
+
+```tsx filename=app/actions/albums/edit/controller.tsx lines=[4-5,10-16]
+import { createController } from "remix/router";
+
+import { routes } from "../../../routes.ts";
+import { getAlbum } from "../data.ts";
+import { AlbumEditPage } from "./page.tsx";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async index(context) {
+      let album = await getAlbum(context.params.albumId);
+
+      if (album === undefined) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      return context.render(<AlbumEditPage album={album} />);
+    },
+    async action() {
+      return new Response("Not implemented", { status: 501 });
+    },
+  },
+});
+```
+
+打开 [http://localhost:44100/albums/thriller/edit](http://localhost:44100/albums/thriller/edit)。
+路由会返回一个已填好专辑数据的 HTML 表单。
+
+在处理 `POST` 请求之前，先在 `app/router.ts` 中添加来自
+[`remix/middleware/form-data`](/docs/request-handling) 的 `formData()` 中间件。
+它会解析一次浏览器表单请求体，让路由 action 可以使用 `FormData`。
+
+```ts filename=app/router.ts lines=[2,9]
+import { createRouter, type RouterContext } from "remix/router";
+import { formData } from "remix/middleware/form-data";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+
+// ...
+
+export const router = createRouter({
+  middleware: [staticFiles("./public", { index: false }), formData(), render({ assets })],
+});
+
+export type AppContext = RouterContext<typeof router>;
+
+declare module "remix" {
+  interface RouterTypes {
+    context: AppContext;
+  }
+}
+
+// ...
+```
+
+我们还会使用 [`remix/data-schema/form-data`](/docs/data-and-validation) 把原始 `FormData`
+转换成类型化的值，再更新专辑。[`remix/data-schema`](/docs/data-and-validation) 是 Remix 内置的
+数据校验与解析库，可以处理表单字段、查询字符串等各种数据。
+
+```tsx filename=app/actions/albums/edit/controller.tsx lines=[2-5,8,11-15,28-41]
+import { createController } from "remix/router";
+import * as s from "remix/data-schema";
+import * as f from "remix/data-schema/form-data";
+import * as coerce from "remix/data-schema/coerce";
+import { redirect } from "remix/response/redirect";
+
+import { routes } from "../../../routes.ts";
+import { getAlbum, updateAlbum } from "../data.ts";
+import { AlbumEditPage } from "./page.tsx";
+
+const albumFormSchema = f.object({
+  artist: f.field(s.string()),
+  title: f.field(s.string()),
+  year: f.field(coerce.number()),
+});
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async index(context) {
+      let album = await getAlbum(context.params.albumId);
+
+      if (album === undefined) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      return context.render(<AlbumEditPage album={album} />);
+    },
+    async action({ formData, params }) {
+      let result = s.parseSafe(albumFormSchema, formData);
+
+      if (!result.success) {
+        return new Response("Invalid album data", { status: 400 });
+      }
+
+      let album = await updateAlbum(params.albumId, result.value);
+
+      if (album === undefined) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      return redirect(routes.albums.show.href({ albumId: album.id }), 303);
+    },
+  },
+});
+```
+
+`action` 路由会校验解析后的 Web `FormData`，对非法输入或不存在的专辑返回明确的响应，
+更新成功后重定向回专辑页面。[`303 See Other`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/303)
+状态告诉浏览器用 `GET` 请求加载专辑页，因此刷新页面不会重复提交表单。
+除了返回普通的 `400` 响应，你也可以[把字段级校验错误渲染回表单](/docs/forms-and-mutations)。
+
+现在可以更新专辑数据，把年份改成正确的值了。
+
+## 添加你的第一个水合组件
+
+你可能注意到，保存专辑需要一点时间。这是因为我们添加了一秒的模拟延迟，
+模拟用户在网络较慢或离服务器较远时的体验。这不算糟糕的加载体验，但还可以更好。
+
+到目前为止，我们还没有在浏览器中使用任何 JavaScript。此前的一切都是服务端 JavaScript，
+甚至组件也是在服务端渲染并以 HTML 流式输出的。
+
+如果想告诉用户表单正在提交，就需要引入一点浏览器 JavaScript。在 Remix 中，
+最简单的方式是用 [`clientEntry(...)`](/docs/interactivity) 包裹组件。组件仍然在服务端渲染，
+但到达浏览器后 Remix 可以水合它。水合会把组件的事件监听器和状态附加到服务端渲染的 HTML 上，
+于是组件可以响应用户交互并更新，而无需等待另一次服务器响应。
+
+首先为表单创建一个路由局部的浏览器模块：
+
+```sh
+mkdir -p app/actions/albums/edit/public
+touch app/actions/albums/edit/public/album-edit-form.tsx
+```
+
+这个同目录下的 `public/` 是显式的浏览器源码边界。模板的资源服务器允许 `app/**/public/**`
+下的源码，因此 Remix 可以把该组件及其局部依赖转换成浏览器模块。请把这些局部依赖放在同一个
+`public/` 目录中。`app/routes.ts` 被单独允许，用于类型安全的链接。模板还会加载
+`app/actions/public/entry.ts`，它[启动 Remix 组件的客户端运行时](/docs/interactivity)。
+如果你的应用需要不同的规则，可以[配置资源服务器边界](/docs/files-and-assets)。
+
+现在有了表单的容身之处，把它抽成独立组件：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx
+import { css } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export function AlbumEditForm(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <form
+        action={routes.albums.edit.action.href({ albumId: album.id })}
+        method="post"
+        mix={css({
+          display: "grid",
+          gap: "0.75rem",
+          maxWidth: "fit-content",
+          "& input": {
+            marginLeft: "0.5rem",
+          },
+        })}
+      >
+        <label>
+          Title
+          <input name="title" defaultValue={album.title} required />
+        </label>
+        <label>
+          Artist
+          <input name="artist" defaultValue={album.artist} required />
+        </label>
+        <label>
+          Year
+          <input name="year" defaultValue={album.year} required type="number" />
+        </label>
+        <button type="submit">Save album</button>
+      </form>
+    );
+  };
+}
+```
+
+更新编辑页面来渲染这个 `AlbumEditForm`：
+
+```tsx filename=app/actions/albums/edit/page.tsx lines=[4,16]
+import type { Handle } from "remix/component";
+import { css } from "remix/component";
+
+import { AlbumEditForm } from "./public/album-edit-form.tsx";
+import { Document } from "../../document.tsx";
+import type { Album } from "../data.ts";
+
+export function AlbumEditPage(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <Document title={`Edit ${album.title} — Albums`}>
+        <main mix={css({ padding: "1rem" })}>
+          <h1>Edit {album.title}</h1>
+          <AlbumEditForm album={album} />
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+一切看起来应该和之前一样。接下来把表单标记为 client entry。
+[`import.meta.url`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import.meta)
+告诉资源服务器哪个源文件应被转换成浏览器可加载的模块：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx lines=[1,13-15,18]
+import { clientEntry, css } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export const AlbumEditForm = clientEntry(
+  import.meta.url,
+  function AlbumEditForm(handle: Handle<{ album: Album }>) {
+    // ...
+  },
+);
+```
+
+页面应该看起来和行为都一样。`clientEntry(...)` 会告诉 Remix 在服务端渲染表单、
+序列化它的 props，并在客户端运行时启动后在浏览器中水合这个组件。
+
+现在表单可以在浏览器中运行了，我们加上 pending 状态。Remix 中的状态就是一个变量。
+在设置作用域中把“状态”声明为变量（这里的 `let pending`）：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx lines=[6]
+// ...
+
+export const AlbumEditForm = clientEntry(
+  import.meta.url,
+  function AlbumEditForm(handle: Handle<{ album: Album }>) {
+    let pending = false;
+
+    return () => {
+      // ...
+    };
+  },
+);
+```
+
+表单提交时，把 `pending` 从 `false` 翻转为 `true`，并调用 `handle.update()`。
+`handle.update()` 告诉组件运行时用新的局部状态重新渲染该组件。为了监听提交，
+我们用 [`on` 辅助函数](/docs/interactivity) 添加事件监听器，并向 `mix` prop 传入一个数组：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx lines=[1,25,27-31,34-36]
+import { clientEntry, css, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export const AlbumEditForm = clientEntry(
+  import.meta.url,
+  function AlbumEditForm(handle: Handle<{ album: Album }>) {
+    let pending = false;
+
+    return () => {
+      let { album } = handle.props;
+
+      return (
+        <form
+          action={routes.albums.edit.action.href({ albumId: album.id })}
+          method="post"
+          mix={[
+            on("submit", () => {
+              pending = true;
+              handle.update();
+            }),
+            css({ display: "grid", gap: "0.75rem", maxWidth: "fit-content" }),
+          ]}
+        >
+          {/* ... */}
+          <button disabled={pending} type="submit">
+            {pending ? "Saving…" : "Save album"}
+          </button>
+        </form>
+      );
+    };
+  },
+);
+```
+
+现在提交表单时，按钮会被禁用，文字变成 “Saving…”。
+
+因为 `entry.ts` [用 `run()` 启动了浏览器运行时](/docs/interactivity)，
+Remix 已经会在不刷新整个页面的情况下提交这个表单：它发送表单、跟随重定向、就地更新页面，
+不需要你自己写提交处理器。如果你之后把校验错误渲染回表单，
+请改为[监听本次提交的 `rmx:navigation` 事件](/docs/forms-and-mutations)，
+这样响应渲染后 pending 状态会重置。
+
+接下来，进一步了解我们在这里用到的[路由映射](/docs/routing-and-controllers)
+与[控制器](/docs/routing-and-controllers)。

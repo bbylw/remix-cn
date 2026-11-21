@@ -1,0 +1,1007 @@
+---
+title: 交互
+description: 服务端渲染的 UI 如何水合、处理事件、连接应用模型、导航并取消过期的工作。
+icon: MousePointerClick
+---
+
+Remix 在服务端渲染页面，只水合那些需要浏览器运行的组件。本章涵盖用 `clientEntry(...)`
+标记组件、用 `run()` 启动浏览器运行时、更新局部 UI 状态、用 `on(...)` 等 mixin 处理事件、
+取消过期异步工作，以及用客户端导航增强链接和表单。对于应用状态与业务规则，
+组件调用普通的 TypeScript 模型，并让自己的状态只关注 UI。
+
+## 渐进增强
+
+先从已经能描述服务器请求的链接和表单开始。这个专辑表单有真实的 action 与 method：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export function AlbumEditForm(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <form action={routes.albums.edit.action.href({ albumId: album.id })} method="post">
+        <label>
+          Title
+          <input defaultValue={album.title} name="title" required />
+        </label>
+        <label>
+          Artist
+          <input defaultValue={album.artist} name="artist" required />
+        </label>
+        <label>
+          Year
+          <input defaultValue={album.year} name="year" required type="number" />
+        </label>
+        <button type="submit">Save album</button>
+      </form>
+    );
+  };
+}
+```
+
+没有 JavaScript 时，浏览器把 `FormData` POST 到路由。action 校验它、更新专辑并返回重定向。
+有 JavaScript 时，事件处理器可以拦截同一次提交，加入 pending UI 或局部刷新页面。
+控制器仍然拥有这次变更和所有错误响应。
+
+导航遵循同样的规则：先渲染带有可用 `href` 的锚点，然后在浏览器运行时可用时，
+让它增强同源导航。
+
+有些交互只有 JavaScript 才能实现。服务器仍然可以渲染它们周围有用的内容、导航与表单。
+给每个水合组件它需要的可序列化数据和路由 URL，而不是把整个页面搬进浏览器代码。
+
+## 用 clientEntry 划分水合边界
+
+`clientEntry(...)` 标记需要浏览器运行的**最小**组件。专辑编辑页可以保持仅服务端，
+只让表单水合：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx lines=[1,13-15]
+import { clientEntry } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export const AlbumEditForm = clientEntry(
+  import.meta.url,
+  function AlbumEditForm(handle: Handle<{ album: Album }>) {
+    return () => {
+      let { album } = handle.props;
+
+      return (
+        <form action={routes.albums.edit.action.href({ albumId: album.id })} method="post">
+          {/* 字段 */}
+        </form>
+      );
+    };
+  },
+);
+```
+
+第一个参数标识组件的模块。使用 `import.meta.url` 时，Remix 用函数名作为导出名，
+因此函数名要与导出名一致。
+
+在服务端，它仍然像普通组件一样渲染。服务器把输出包在一对 HTML 注释
+`<!-- rmx:h:... -->` 与 `<!-- /rmx:h -->` 之间，并把 props 序列化进页面。
+注释标记的是文档范围而不是包裹元素，因此水合后的输出可以是任意标记。
+在浏览器中，`run()` 找到每个范围，用普通 `import()` 加载组件模块，
+并用序列化后的 props 原地水合现有 DOM。
+
+每个 client entry 独立水合。渲染在另一个 client entry 内部的 entry 可以读取祖先的 context，
+但兄弟 client entry 不共享组件 context。给每个兄弟传入所需数据，或通过普通 TypeScript 模块连接它们。
+
+client entry 的 props 要跨服务端到浏览器，因此必须可序列化：字符串、数字、布尔值、
+`null`、`undefined`、普通对象与数组，以及 JSX 元素。不要传函数、类实例、
+带自定义原型的数据库记录或其他不透明的运行时值。props 中的元素可以使用 `css()`，
+但不能使用 `on()`、`ref()` 或 `createMixin()` 自定义 mixin 等其他 mixin。
+需要这些的元素请在 client entry 内部渲染。
+
+在水合边界内标记**可交互 UI**，而不是习惯性地包裹整个页面。静态祖先和兄弟不会因为下面有个按钮就水合。
+把数据库、已认证用户和请求上下文留在服务端。传给 client entry 普通的初始数据、路由 URL
+和其他浏览器安全的值。
+
+## 用 run 启动浏览器运行时
+
+当浏览器入口模块调用 `run()` 后，client entry 才会水合。从文档外壳加载这个模块
+（例如 `app/actions/public/entry.ts`），并调用一次 `run()`：
+
+```ts filename=app/actions/public/entry.ts
+import {
+  detectMultipleImportMapSupport,
+  importModule,
+  preloadShim,
+} from "remix/multiple-import-maps-polyfill";
+import { run } from "remix/component";
+
+let app = run({
+  async loadModule(moduleUrl, exportName) {
+    let module = await importModule(moduleUrl);
+    let Component = module[exportName];
+    if (typeof Component !== "function") {
+      throw new Error(`Unknown component: ${moduleUrl}#${exportName}`);
+    }
+    return Component;
+  },
+  async processClientEntryPreloads(preloads) {
+    if (await detectMultipleImportMapSupport()) return preloads;
+
+    preloadShim(preloads);
+    return [];
+  },
+});
+
+app.addEventListener("error", (event) => {
+  console.error("Component error:", event.error);
+});
+
+await app.ready();
+```
+
+`loadModule` 为文档中发现的每个 client entry 导入具名组件。
+[import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+告诉浏览器每个裸模块说明符解析到哪个 URL，随着 client entry 与 frame 加载，Remix 会添加更多映射。
+支持单页多个 import map 的浏览器使用原生导入与预加载；不支持的浏览器在后续 frame 响应引入新映射时，
+使用 `remix/multiple-import-maps-polyfill`。如果只面向原生支持的浏览器，`loadModule` 可以直接调用
+`import(moduleUrl)`，并去掉 `processClientEntryPreloads`。
+
+返回的应用运行时有三个生命周期方法：
+
+- `app.ready()`：初始 client entry 水合后 resolve。
+- `app.flush()`：同步应用待处理的组件更新，主要用于必须立即观察 DOM 的测试与集成。
+- `app.dispose()`：移除运行时的组件与监听器。
+
+`run()` 水合服务端渲染的页面，它不是第二个应用路由器。浏览器请求仍然发送给拥有对应服务端行为的路由 action。
+
+`run()` 还为 frame 提供[默认的浏览器解析器](/docs/streaming-ui-with-frames)。
+
+## 用 createRoot 挂载仅客户端 UI
+
+当没有可水合的服务端渲染组件时，使用 `createRoot(container)`，
+例如把命令式小部件挂载到另一个应用创建的容器中。
+
+```tsx filename=app/actions/public/support-widget.tsx
+import { createRoot } from "remix/component";
+import type { Handle } from "remix/component";
+
+function SupportWidget(_handle: Handle) {
+  return () => <a href="/support">Contact support</a>;
+}
+
+let container = document.getElementById("support-widget");
+
+if (container) {
+  let root = createRoot(container);
+  root.render(<SupportWidget />);
+
+  window.addEventListener("pagehide", () => root.dispose(), { once: true });
+}
+```
+
+根拥有该容器。`root.render(node)` 安排一棵树，`root.flush()` 同步应用待处理工作，
+`root.dispose()` 移除树并运行清理。普通页面 UI 应当从服务端开始并使用 `clientEntry(...)`，
+否则用户要等 JavaScript 才能看到服务器本可渲染的内容。
+
+## 状态、更新与渲染后任务
+
+组件局部的 UI 状态位于[设置作用域](/docs/rendering-ui)，即组件函数中在返回渲染函数之前
+只运行一次的函数体。在事件处理器中修改它，然后调用 `handle.update()`：
+
+```tsx
+import { on } from "remix/component";
+import type { Handle } from "remix/component";
+
+function Counter(handle: Handle<{ initialCount: number }>) {
+  let count = handle.props.initialCount;
+
+  return () => (
+    <button
+      mix={on("click", () => {
+        count++;
+        handle.update();
+      })}
+      type="button"
+    >
+      Count: {count}
+    </button>
+  );
+}
+```
+
+`count` 位于设置作用域，因此它在每次渲染之间保留，而不会成为组件 props 的一部分。
+
+Remix 不拥有你的状态。它就是一个普通变量，你直接修改它。`handle.update()`
+是组件应当重新渲染的唯一信号；忘记调用它，组件肉眼可见地不变，通常很容易发现。
+因为组件只需要状态和请求渲染的方式，你可以在其上构建其他模式，例如在变化时调用
+`handle.update()` 的 store 或 signals。
+
+在事件处理器、排队任务、订阅、定时器或其他在组件 **commit**（渲染输出已应用到 DOM）
+之后运行的工作中调用 `handle.update()`。在设置阶段调用它会发出警告并跳过额外渲染，
+因为初始渲染紧随设置之后。在渲染期间调用，或在设置之外、初始 commit 之前调用，会抛出错误。
+如果渲染过程中发现应在 commit 后运行的工作，用 `handle.queueTask()` 安排它。
+
+服务端渲染的组件也会在服务端运行设置与渲染。在服务端，`handle.update()` 抛出错误，
+排队任务永远不会运行。把定时器、DOM 读取以及 `window` 等浏览器全局对象的使用放在事件处理器
+或排队任务中，它们只在浏览器运行。
+
+`handle.update()` 安排工作并返回一个 promise。下一步需要更新后的 DOM 时 await 它：
+
+```tsx
+import { on, ref } from "remix/component";
+import type { Handle } from "remix/component";
+
+function RenameButton(handle: Handle) {
+  let editing = false;
+  let input: HTMLInputElement;
+
+  return () => (
+    <div>
+      <button
+        mix={on("click", async () => {
+          editing = true;
+          await handle.update();
+          input.focus();
+        })}
+        type="button"
+      >
+        Rename
+      </button>
+      {editing && <input aria-label="Album title" mix={ref((node) => (input = node))} />}
+    </div>
+  );
+}
+```
+
+当更新移除了拥有焦点的元素（例如对话框的关闭按钮）时，用同样的方式把焦点移回打开它的控件，
+让键盘和屏幕阅读器用户不会失去位置。
+
+这个 promise resolve 为一个 [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)，
+表示工作何时应停止，`fetch()` 等 API 接受它来取消。只有工作会跨过另一个异步边界时才需要捕获它。
+运行时无法在 `await handle.update()` 与下一条同步语句之间中止信号，因此 `input.focus()`
+不需要检查信号。若后面还有异步工作，尽量把信号传给该工作，并在之后的 `await` 后检查再继续：
+
+```tsx
+// 在异步事件处理器内：
+let signal = await handle.update();
+let response = await fetch(href, { signal });
+if (signal.aborted) return;
+
+status = response.ok ? "saved" : "error";
+handle.update();
+```
+
+`handle.queueTask(task)` 在下一次更新的 commit 期间运行任务。当 DOM 测量或另一次更新必须属于该 flush 时使用：
+
+```tsx
+// 在 `detailsSection` 已赋值的异步事件处理器内：
+showDetails = true;
+handle.update();
+handle.queueTask(() => {
+  detailsSection.scrollIntoView({ block: "nearest" });
+});
+```
+
+不要为了给排队任务留标记而创建额外状态。在拥有该工作的事件处理器中启动它，
+或让排队任务直接以它观察的 prop 值为键。
+
+只要更新改变了列表，key 就很重要。使用稳定 ID，而不是排序时会变化的数组索引，
+或渲染时创建的随机值。匹配的 key 让 Remix 移动现有 DOM 与组件实例，而不是把状态配给错误的项。
+
+设置作用域变量适合保存菜单是否打开、哪个字段有焦点、请求是否 pending 这类 UI 状态。
+把业务规则与共享应用状态放在组件之外的普通 TypeScript 中，在事件处理器里调用该代码，
+并在模型变化时[更新组件](#saving-a-client-owned-document)。
+
+## 用 on 处理事件
+
+`on(type, handler, capture?)` 给宿主元素附加类型化 DOM 事件。事件的 `currentTarget`
+会从宿主推断：
+
+```tsx
+import { on } from "remix/component";
+import type { Handle } from "remix/component";
+
+function AlbumForm(_handle: Handle) {
+  return () => (
+    <form
+      mix={on("submit", (event) => {
+        event.preventDefault();
+        let formData = new FormData(event.currentTarget);
+        console.log(formData.get("title"));
+      })}
+    >
+      {/* 字段 */}
+    </form>
+  );
+}
+```
+
+优先使用原生元素和原生事件。按钮的 `click` 已覆盖指针、触摸、Enter 与 Space 激活；
+表单的 `submit` 覆盖提交按钮和字段中的 Enter。只有当交互本身确实需要时，
+才使用更底层的指针或键盘事件，而不是重建平台已经提供的行为。
+
+如果事件在 `window` 或 `document` 上启动临时监听器，给这些监听器自己的清理信号，
+并在交互结束或组件断开时停止它们。
+
+只有当增强路径会完成浏览器原本的工作时才调用 `preventDefault()`。
+如果事件处理器只是在普通表单提交前添加 pending 状态，就让提交继续。
+
+## 受控与非受控输入
+
+非受控输入把当前值保存在 DOM 中，`defaultValue` 提供初始值。受控输入则从组件状态取得当前值，
+它的 input 处理器把 DOM 值复制进状态并更新组件：
+
+```tsx filename=app/ui/public/title-inputs.tsx
+import { on } from "remix/component";
+import type { Handle } from "remix/component";
+
+const initialTitle = "Thriller";
+
+function TitleInputs(handle: Handle) {
+  let title = initialTitle;
+
+  return () => (
+    <div>
+      <p>
+        <label>
+          Uncontrolled <input defaultValue={initialTitle} />
+        </label>
+      </p>
+
+      <p>
+        <label>
+          Controlled{" "}
+          <input
+            value={title}
+            mix={on("input", (event) => {
+              title = event.currentTarget.value;
+              handle.update();
+            })}
+          />
+        </label>
+      </p>
+
+      <button
+        mix={on("click", () => {
+          title = initialTitle;
+          handle.update();
+        })}
+        type="button"
+      >
+        Reset controlled input
+      </button>
+    </div>
+  );
+}
+```
+
+输入会同时改变两个输入框。点击按钮会重置受控输入，因为它的 `value` 来自 `title`；
+非受控输入保留 DOM 值，因为 `defaultValue` 只应用初始值。
+
+优先使用非受控输入。只有当用户输入之外的因素会改变值时（重置按钮、生成值、输入时格式化），
+才控制输入。否则从事件或提交时的 `FormData` 读取值，让组件只保存它渲染所需的状态。
+
+## 用 mix 组合行为
+
+`mix` prop 给宿主元素附加可复用的行为与样式。可以直接传一个 mixin，元素需要多个时传数组：
+
+```tsx
+import { attrs, css, on, ref } from "remix/component";
+import type { Handle } from "remix/component";
+
+function SaveButton(_handle: Handle) {
+  return () => (
+    <button
+      mix={[
+        attrs({ type: "button" }),
+        ref((node) => console.log("Mounted", node)),
+        on("click", () => console.log("Save album")),
+        css({
+          minWidth: "8rem",
+          minHeight: "2.5rem",
+          border: 0,
+          borderRadius: "999px",
+          background: "#111",
+          color: "#fff",
+        }),
+      ]}
+    >
+      Save
+    </button>
+  );
+}
+```
+
+核心 mixin 各司其职：
+
+- `on(...)` 附加类型化事件处理器。
+- `ref(...)` 在元素插入时运行设置，并提供清理信号。
+- `attrs(...)` 提供默认属性，但不替换显式元素 props。
+- `link(...)` 添加客户端导航行为与链接语义。
+- `css(...)` 应用静态生成的 CSS。
+
+组件与 mixin 沿着不同的轴组合。组件组合树：一个组件在内部渲染其他组件与宿主元素。
+mixin 组合单个宿主元素上的行为与样式。要给按钮添加 tooltip、菜单触发器与点击处理器，
+就让按钮留在原处，为每种行为添加一个 mixin，而不是为每种行为包一层组件。
+
+Mixin 按数组顺序应用。同一事件的 `on(...)` 处理器按该顺序运行，
+因此在一个处理器中调用 `event.stopImmediatePropagation()` 会阻止其后的处理器。
+
+[动画 mixin](/docs/animation)使用同一个 prop。把频繁变化的值放在 `style`、`value`、
+`checked` 和 ARIA 属性等普通 props 中，而不是为每个状态变化重建静态 mixin。
+
+## DOM 引用、全局事件与清理
+
+`ref(...)` 接收插入的 DOM 节点和一个在该节点移除时中止的信号。把观察器和元素私有的监听器绑定到该信号：
+
+```tsx
+import { ref } from "remix/component";
+import type { Handle } from "remix/component";
+
+function MeasuredPanel(handle: Handle) {
+  let width = 0;
+
+  return () => (
+    <div
+      mix={ref((node, signal) => {
+        let observer = new ResizeObserver((entries) => {
+          let entry = entries[0];
+          if (!entry) return;
+          width = Math.round(entry.contentRect.width);
+          handle.update();
+        });
+
+        observer.observe(node);
+        signal.addEventListener("abort", () => observer.disconnect());
+      })}
+    >
+      Panel width: {width}px
+    </div>
+  );
+}
+```
+
+ref 回调在元素插入时运行，而不是每次组件更新都运行。如果元素是条件渲染的，
+它的 ref 信号正好拥有“该元素消失时停止工作”的生命周期。
+
+对于渲染树之外的事件目标（如 `window`、`document` 或媒体查询），使用原生 `addEventListener()`。
+把仅浏览器设置安排在客户端 commit 之后，并传入 `handle.signal`，让组件断开时移除监听器：
+
+```tsx
+import { clientEntry } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const ViewportWidth = clientEntry(import.meta.url, function ViewportWidth(handle: Handle) {
+  let width: number | undefined;
+
+  handle.queueTask(() => {
+    width = window.innerWidth;
+    window.addEventListener(
+      "resize",
+      () => {
+        width = window.innerWidth;
+        handle.update();
+      },
+      { signal: handle.signal },
+    );
+    handle.update();
+  });
+
+  return () => <span>{width === undefined ? "Measuring…" : `${width}px`}</span>;
+});
+```
+
+把设置排队可以避免在服务端渲染期间读取 `window`。对于仅客户端根，设置本来就只在浏览器运行，
+可以直接注册监听器。
+
+有些监听器需要比组件更短的生命周期。在工作开始时创建 `AbortController`，
+把它的 signal 传给 `addEventListener(...)`，工作结束时中止它。
+同时从 `handle.signal` 中止它，这样导航不会留下临时监听器。
+
+## 异步工作与取消
+
+Remix 为异步工作提供限定于其创建者的中止信号：
+
+| 信号                                | 何时中止                                 | 适合                                                       |
+| ----------------------------------- | ---------------------------------------- | ---------------------------------------------------------- |
+| `on(...)` 处理器的第二个参数        | 同一处理器再次运行或其元素被移除         | 最新事件应替换先前工作的请求。                             |
+| 排队任务的参数                      | 组件再次渲染或断开                       | 以 prop 为键的加载与渲染后 DOM 工作。                      |
+| `handle.signal`                     | 组件断开                                 | 与组件同生命周期的定时器与全局监听器。                     |
+
+把最窄的信号传给 `fetch()`，并在任何无法接收信号的 await 操作后检查它。
+下面的例子中，服务端把 `routes.albums.search.href()` 作为 `searchHref` 传入，
+路由返回简短文本结果，浏览器组件不硬编码端点：
+
+```tsx filename=app/ui/public/album-search.tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const AlbumSearch = clientEntry(
+  import.meta.url,
+  function AlbumSearch(handle: Handle<{ searchHref: string }>) {
+    let error: string | undefined;
+    let loading = false;
+    let resultText = "";
+
+    return () => (
+      <div>
+        <input
+          aria-label="Search albums"
+          mix={on("input", async (event, signal) => {
+            let url = new URL(handle.props.searchHref, window.location.href);
+            url.searchParams.set("query", event.currentTarget.value);
+            error = undefined;
+            loading = true;
+            handle.update();
+
+            try {
+              let response = await fetch(url, { signal });
+              if (!response.ok) {
+                throw new Error(`Search failed with status ${response.status}`);
+              }
+
+              let nextResultText = await response.text();
+              if (signal.aborted) return;
+
+              resultText = nextResultText;
+              loading = false;
+              handle.update();
+            } catch (caught) {
+              if (signal.aborted) return;
+              error = caught instanceof Error ? caught.message : "Search failed";
+              loading = false;
+              handle.update();
+            }
+          })}
+          type="search"
+        />
+        {error ? <p role="alert">{error}</p> : null}
+        {loading ? <p>Searching…</p> : null}
+        {resultText ? <p>{resultText}</p> : null}
+      </div>
+    );
+  },
+);
+```
+
+再次输入会中止前一个处理器的信号及其 fetch。旧查询的慢响应无法替换更新的结果。
+
+## 把应用逻辑留在组件之外
+
+设置作用域变量让组件状态很方便，但并不意味着组件适合拥有每条规则。
+当状态描述当前 UI（面板是否打开、哪个元素应获得焦点、请求是否 pending）时，把它留在组件里。
+把应用数据与操作放进组件调用的普通 TypeScript 中。
+
+一个小模型能让这条边界具体化。这个购物车拥有自己的条目与数量变更：
+
+```ts filename=app/ui/public/cart-model.ts
+import { TypedEventTarget } from "remix/component";
+
+export interface CartItem {
+  id: string;
+  quantity: number;
+}
+
+export class CartModel extends TypedEventTarget<{ change: Event }> {
+  #items: CartItem[];
+
+  constructor(items: readonly CartItem[]) {
+    super();
+    this.#items = [...items];
+  }
+
+  get itemCount(): number {
+    return this.#items.reduce((total, item) => total + item.quantity, 0);
+  }
+
+  add(productId: string): void {
+    let item = this.#items.find((item) => item.id === productId);
+
+    this.#items = item
+      ? this.#items.map((item) =>
+          item.id === productId ? { ...item, quantity: item.quantity + 1 } : item,
+        )
+      : [...this.#items, { id: productId, quantity: 1 }];
+
+    this.dispatchEvent(new Event("change"));
+  }
+}
+```
+
+组件从可序列化 props 创建模型、监听变化，并且只为详情面板保留打开状态：
+
+```tsx filename=app/ui/public/cart.tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { CartModel, type CartItem } from "./cart-model.ts";
+
+interface CartProps {
+  initialItems: CartItem[];
+  product: { id: string; name: string };
+}
+
+export const Cart = clientEntry(import.meta.url, function Cart(handle: Handle<CartProps>) {
+  let cart = new CartModel(handle.props.initialItems);
+  let detailsOpen = false;
+
+  cart.addEventListener("change", () => handle.update(), { signal: handle.signal });
+
+  return () => (
+    <section>
+      <button mix={on("click", () => cart.add(handle.props.product.id))} type="button">
+        Add {handle.props.product.name}
+      </button>
+      <button
+        aria-expanded={detailsOpen}
+        mix={on("click", () => {
+          detailsOpen = !detailsOpen;
+          handle.update();
+        })}
+        type="button"
+      >
+        Cart ({cart.itemCount})
+      </button>
+      {detailsOpen ? <p>{cart.itemCount} items in your cart.</p> : null}
+    </section>
+  );
+});
+```
+
+`cart.addEventListener()` 把模型变化连接到 `handle.update()`，`handle.signal`
+在组件断开时移除订阅。如果多个组件使用同一个模型，在它们最近的共享客户端边界创建它，
+并通过[组件 context](/docs/rendering-ui)提供。不要通过 `clientEntry(...)` 的 props 传类实例，
+因为这些 props 会被序列化。
+
+有了这种拆分，你可以在没有 DOM 的情况下测试购物车规则，只在依赖组件与 DOM 的详情按钮
+和条目数量上使用[组件测试](/docs/testing)。
+
+## 客户端导航
+
+链接继续使用真实的锚点。`run()` 启动后，运行时可以通过浏览器的
+[Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) 增强同源导航，
+让脚本拦截导航而无需整页加载。跨源链接、下载以及浏览器无法拦截的导航仍作为普通文档请求。
+
+```tsx filename=app/ui/album-link.tsx
+import type { Handle } from "remix/component";
+
+import { routes } from "../routes.ts";
+
+function AlbumLink(handle: Handle<{ albumId: string; title: string }>) {
+  return () => (
+    <a href={routes.albums.show.href({ albumId: handle.props.albumId })}>{handle.props.title}</a>
+  );
+}
+```
+
+当导航由代码发起时，使用 `navigate(href, options)`。把 `link(href, options)` 应用到任何
+应表现得像链接的 HTML 宿主上，例如整块表面都可交互的卡片：
+
+```tsx filename=app/ui/album-navigation.tsx
+import { link, navigate, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../routes.ts";
+
+function AlbumNavigation(handle: Handle<{ albumId: string; title: string }>) {
+  return () => {
+    let href = routes.albums.show.href({ albumId: handle.props.albumId });
+
+    return (
+      <div>
+        <article mix={link(href)}>{handle.props.title}</article>
+        <button mix={on("click", () => navigate(href, { history: "replace" }))} type="button">
+          Replace current album
+        </button>
+      </div>
+    );
+  };
+}
+```
+
+在非锚点宿主上，`link(...)` 会添加 `role="link"`，在需要时让元素可键盘聚焦，
+处理 Enter 与鼠标/修饰键激活，并用 `aria-disabled` 反映禁用的宿主。
+标记合适时优先使用锚点；只有让其他宿主表现得像链接是 UI 的刻意设计时才使用这个 mixin。
+
+原生锚点和表单还可以通过对应 `link(...)` 与 `navigate(...)` 选项的属性控制感知 frame 的导航：
+
+- `data-rmx-target` 指定要重载的 frame 名称。
+- `data-rmx-src` 提供 `data-rmx-target` 选中的已挂载具名 frame 要获取的 URL，而 `href` 仍是浏览器目的地。
+- `data-rmx-history="push|replace"` 控制导航如何更新历史，包括覆盖表单默认行为。
+- `data-rmx-reset-scroll="manual"` 保留当前滚动位置。
+- `data-rmx-reset-focus="manual"` 禁用导航后的自动焦点重置。
+- `data-rmx-document` 退出拦截，让浏览器执行完整文档导航。
+
+在 `link(...)` 与 `navigate(...)` 中，用 `resetScroll: "manual"` 或 `resetFocus: "manual"` 获得相同行为。
+两个控制项也接受 `"after-transition"`（默认值）。旧的布尔选项与 `"true"`/`"false"` 属性值仍然有效：
+`true` 对应 `"after-transition"`，`false` 对应 `"manual"`。
+
+顶层 frame 跟随浏览器 URL。如果省略 `data-rmx-target`，被拦截的导航会从链接或表单目的地
+重载顶层 frame。Remix 把新页面协调进当前文档，因此新页面在同一位置渲染的 client entry
+会保留局部状态，同时接收新的服务端 props。如果服务端渲染显示某区域折叠，
+而用户曾在 client entry 中展开它，它会保持展开。如果指定目标没有匹配已挂载 frame，
+浏览器执行文档导航。原生表单导航保留 method、body、文件与 submitter 覆盖。
+前进/后退遍历会重载目标文档，而不是协调过期 frame 内容。
+
+提供的 `data-rmx-src` 无论目标如何都必须是有效的同源 URL。无效或跨源值会禁用拦截，
+把导航留给浏览器。这些规则同样适用于 `link(...)` 与 `navigate(...)` 的 `src`、`target` 选项。
+
+这些属性最适合与[具名 frame](/docs/streaming-ui-with-frames)一起使用，
+表单也可以直接通过 frame 解析器[导航 frame](/docs/streaming-ui-with-frames)。
+
+## 导航前预取链接
+
+你可以通过 `data-rmx-prefetch="intent|viewport"` 属性选择链接预取，加速客户端导航。
+Remix 加载目标 HTML，以发现 JavaScript、CSS 以及声明的图片和字体预加载，但不运行目标代码。
+导航会复用浏览器 HTTP 缓存中匹配的新鲜 HTML 与资源响应。
+
+用 `intent` 在 hover、focus 或指针按下时预取；或用更激进的 `viewport`，
+在链接进入视口时预取，包括初始加载时已经可见的链接。
+
+```tsx
+<a href={routes.albums.show.href({ albumId: handle.props.albumId })} data-rmx-prefetch="intent">
+  {handle.props.title}
+</a>
+```
+
+如果需要根据自定义逻辑命令式预取，可以使用 `prefetch` API：
+
+```ts
+import { prefetch } from "remix/component";
+
+import { routes } from "../routes.ts";
+
+prefetch(routes.albums.show.href({ albumId: "thriller" }));
+```
+
+只预取那些 GET 请求可以安全推测执行的链接。
+
+## 用 fetch 与导航增强表单
+
+一旦 [`run()`](#browser-entry-with-run) 启动运行时，Remix 已经把表单作为
+[frame 导航](/docs/streaming-ui-with-frames)提交，无需整页刷新。当你需要它不提供的行为时
+（例如在组件内处理错误响应），才编写自己的提交处理器。
+
+这不需要再增加一套变更 API。提交处理器发送表单现有的 action、method 与 `FormData`，
+然后跟随 action 的重定向：
+
+```tsx filename=app/actions/albums/edit/public/album-edit-form.tsx
+import { clientEntry, navigate, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../../../routes.ts";
+
+interface Album {
+  artist: string;
+  id: string;
+  title: string;
+  year: number;
+}
+
+export const AlbumEditForm = clientEntry(
+  import.meta.url,
+  function AlbumEditForm(handle: Handle<{ album: Album }>) {
+    let error: string | undefined;
+    let pending = false;
+
+    return () => {
+      let { album } = handle.props;
+
+      return (
+        <form
+          action={routes.albums.edit.action.href({ albumId: album.id })}
+          method="post"
+          mix={on("submit", async (event, signal) => {
+            let form = event.currentTarget;
+            event.preventDefault();
+            error = undefined;
+            pending = true;
+            handle.update();
+
+            try {
+              let response = await fetch(form.action, {
+                body: new FormData(form),
+                method: form.method,
+                signal,
+              });
+
+              if (signal.aborted) return;
+              if (!response.ok) {
+                error = await response.text();
+                if (signal.aborted) return;
+                pending = false;
+                handle.update();
+                return;
+              }
+
+              await navigate(response.url, { history: "replace" });
+            } catch (caught) {
+              if (signal.aborted) return;
+              error = caught instanceof Error ? caught.message : "Unable to save album";
+              pending = false;
+              handle.update();
+            }
+          })}
+        >
+          <label>
+            Title
+            <input defaultValue={album.title} name="title" required />
+          </label>
+          <label>
+            Artist
+            <input defaultValue={album.artist} name="artist" required />
+          </label>
+          <label>
+            Year
+            <input defaultValue={album.year} name="year" required type="number" />
+          </label>
+          <button disabled={pending} type="submit">
+            {pending ? "Saving…" : "Save album"}
+          </button>
+          {error ? <p role="alert">{error}</p> : null}
+        </form>
+      );
+    };
+  },
+);
+```
+
+服务端 action 就是普通表单提交的那个 action。未增强的提交仍会收到重定向或错误响应。
+增强路径消费该响应，在不成功时本地显示错误，并用 `navigate(...)` 跟随控制器的重定向 URL。
+
+选择与 UI 匹配的同步边界：
+
+- 当文档导航就是正确结果时，正常提交现有表单。
+- 当页面在导航前需要 pending 或内联错误 UI 时，用 `fetch()` 拦截。
+- 当浏览器侧模型拥有数据、且不需要改变服务端渲染区域时，发送 JSON。
+- 当数据独立于当前页面变化时，轮询一个小的 JSON 端点。
+
+一次变更也可以[只重载一个路由拥有的 frame](/docs/streaming-ui-with-frames)，而不导航整个文档。
+
+## Pending 与乐观 UI
+
+当组件自己发送请求，且渲染输出会读取 `pending` 标志时，把它保存在设置作用域。
+在提交处理器中、请求之前设置它，请求结束时清除它。这足以实现禁用控件、pending 文案、
+进度指示与防重复提交。
+
+对于 Remix 作为 [frame 导航](#client-navigation)处理的表单，使用
+[`on('rmx:navigation', handler)`](/docs/interactivity) 跟随按钮或表单自己的提交。
+事件携带提交的 `formData`；它的 `finished` promise 在渲染和导航（包括重定向）完成后
+以一个 `AbortSignal` resolve，失败时 reject。取消时以一个已中止的信号 resolve。
+
+乐观 UI 在请求完成前渲染预期结果。一个水合表单可以渲染它刚提交的内容，并让响应替换它：
+
+```tsx filename=app/actions/albums/public/favorite-form.tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const FavoriteForm = clientEntry(
+  import.meta.url,
+  function FavoriteForm(handle: Handle<{ action: string; favorite: boolean }>) {
+    let submitted: boolean | undefined;
+    let failed = false;
+
+    return () => {
+      let favorite = submitted ?? handle.props.favorite;
+      return (
+        <form
+          method="post"
+          action={handle.props.action}
+          mix={on("rmx:navigation", async (event, signal) => {
+            submitted = event.formData?.get("favorite") === "true";
+            failed = false;
+            handle.update();
+            try {
+              await event.finished;
+            } catch {
+              if (!signal.aborted) failed = true;
+            }
+            if (signal.aborted) return;
+            submitted = undefined;
+            handle.update();
+          })}
+        >
+          <input type="hidden" name="favorite" value={String(!favorite)} />
+          <button type="submit" aria-pressed={favorite ? "true" : "false"}>
+            Favorite
+          </button>
+          <span role="status">{failed ? "Couldn’t save. Try again." : ""}</span>
+        </form>
+      );
+    };
+  },
+);
+```
+
+乐观状态最适合可逆、可预测的变化，例如切换、重排和添加已知条目。
+当服务器决定最终值、执行破坏性操作，或以用户必须先解决的方式拒绝请求时，应等待响应。
+当浏览器侧模型拥有数据时，把乐观操作及其恢复策略放进该模型，
+把 pending 文案、打开菜单、聚焦控件等 UI 关注点留在组件中。
+如果乐观请求失败，恢复先前状态或采用服务器响应，并渲染产生的错误或重试控件。
+
+## 何时创建自定义事件 mixin
+
+大多数应用代码应当使用 `on(...)` 配合原生事件。当多个组件需要由多个底层事件构建的同一交互
+（例如带计时或指针状态的手势）时，创建事件 mixin。mixin 可以把状态保存在设置作用域，
+并向消费者派发一个语义化、类型化的事件。
+
+这个 `longPress()` mixin 把按住指针变成 `app:longpress` 事件：
+
+```tsx filename=app/ui/public/long-press.tsx
+import { createMixin, on } from "remix/component";
+
+export const longPressType = "app:longpress" as const;
+
+export class LongPressEvent extends Event {
+  constructor() {
+    super(longPressType, { bubbles: true });
+  }
+}
+
+declare global {
+  interface HTMLElementEventMap {
+    [longPressType]: LongPressEvent;
+  }
+}
+
+export const longPress = createMixin<HTMLElement>((handle) => {
+  let node: HTMLElement | undefined;
+  let timeout: number | undefined;
+
+  handle.addEventListener("insert", (event) => {
+    node = event.node;
+  });
+  handle.addEventListener("remove", cancel);
+
+  function cancel() {
+    window.clearTimeout(timeout);
+  }
+
+  return () => (
+    <handle.element
+      mix={[
+        on("pointerdown", () => {
+          cancel();
+          timeout = window.setTimeout(() => {
+            node?.dispatchEvent(new LongPressEvent());
+          }, 500);
+        }),
+        on("pointerup", cancel),
+        on("pointercancel", cancel),
+        on("pointerleave", cancel),
+      ]}
+    />
+  );
+});
+```
+
+像其他 DOM 事件一样用 `on(...)` 消费这个语义事件：
+
+```tsx
+<button
+  mix={[
+    longPress(),
+    on(longPressType, () => {
+      console.log("Long press");
+    }),
+  ]}
+>
+  Hold for options
+</button>
+```
+
+给自定义事件名加命名空间以避免冲突，一次性行为留在使用它的组件中。

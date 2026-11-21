@@ -1,0 +1,376 @@
+---
+title: 路由与控制器
+description: 路由映射、路由辅助函数、控制器、action 与响应如何共同定义 Remix 的请求处理。
+icon: Route
+---
+
+当一个 Web [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) 到达 Remix 路由器时，
+Remix 会把它与某条路由匹配，运行拥有该路由的控制器 action，并把 action 返回的 Web
+[`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) 发回客户端。
+
+本章聚焦路由与控制器的边界。`app/routes.ts` 声明应用接受的 URL 与方法，
+`app/actions/` 中的控制器实现它们，每个 action 返回的响应最终成为浏览器收到的页面、
+重定向、JSON、文件或错误。
+
+## 路由即 URL 契约
+
+在 Remix 中，路由的定义与处理匹配请求的 action 是分开的。这种分离让服务端代码和浏览器模块
+共享类型化的 URL 辅助函数，而不会把控制器带进浏览器。你在 `app/routes.ts` 中定义应用接受的 URL 与方法。
+
+下面是一个唱片店的小型路由映射：
+
+```ts filename=app/routes.ts
+import { route } from "remix/routes";
+
+export const routes = route({
+  home: "/",
+  albums: {
+    show: { method: "GET", pattern: "/albums/:albumId" },
+    edit: {
+      index: { method: "GET", pattern: "/albums/:albumId/edit" },
+      action: { method: "POST", pattern: "/albums/:albumId/edit" },
+    },
+  },
+});
+```
+
+`route(...)` 返回一个类型化路由映射，嵌套结构与参数一致。像 `routes.albums.show`
+这样的叶子是一个带有 method、pattern 与 `href(...)` 辅助函数的路由；
+像 `routes.albums` 或 `routes.albums.edit` 这样的分支则是另一个路由映射。
+
+路由器使用这些叶子匹配请求，应用的其他部分用它们构建类型化 URL：
+
+```ts
+routes.albums.show.href({ albumId: "thriller" });
+// /albums/thriller
+```
+
+因为 `:albumId` 是路径变量，`show` 路由的 `href(...)` 要求传入 `albumId`。
+路径变量在单个路径段内匹配，并成为控制器中 `context.params` 的属性。
+如果你之后把模式改成 `'/albums/:id'`，仍然传入 `{ albumId: ... }` 的旧调用会得到 TypeScript 错误。
+同一个 `routes` 对象可以导入控制器与浏览器模块，用在链接、表单、重定向和测试里。
+URL 的变化不再隐藏在应用各处的字符串字面量中。
+
+路径变量只是 Remix 路由模式语法的一部分。模式还可以包含通配符、可选分组、搜索约束、
+转义字面量、主机名变量、完整来源以及优先级规则。一个模式可以组合所有这些特性：
+
+```ts
+"/docs(/v:version)/:category/*slug.:format?preview";
+// 匹配 /docs/v2/guides/routing/route-maps.html?preview=1
+```
+
+你不需要记住 Remix 的路由模式语法。完整的语法以及更底层的
+`remix/route-pattern/href`、`remix/route-pattern/match` API 记录在 `remix/route-pattern` 包中。
+
+在上面的路由映射里，`edit` 分支在同一个 URL 上有两个叶子：`index` 处理 `GET`，`action` 处理 `POST`。
+
+```ts
+routes.albums.edit.index.href({ albumId: "thriller" }); // GET /albums/thriller/edit
+routes.albums.edit.action.href({ albumId: "thriller" }); // POST /albums/thriller/edit
+```
+
+叶子与嵌套映射的区别，决定了[映射控制器](#mapping-controllers)时由哪个控制器处理每条路由。
+
+## 路由构建器：route、get、post、put、del、form、resources
+
+[`remix/routes`](/docs/routing-and-controllers) 中的路由辅助函数用命名 HTTP 方法或约定形状的调用，
+替代 `{ method, pattern }` 对象。每个辅助函数产生的路由叶子与路由映射，与对象形式完全一致。
+
+```ts filename=app/routes.ts
+import { del, get, post, route } from "remix/routes";
+
+export const routes = route({
+  home: get("/"),
+  albums: {
+    show: get("/albums/:albumId"),
+    create: post("/albums"),
+    destroy: del("/albums/:albumId"),
+  },
+});
+```
+
+这些辅助函数覆盖单方法叶子、嵌套分组、表单和约定式资源：
+
+| 辅助函数                                                | 用途                                         |
+| ------------------------------------------------------- | -------------------------------------------- |
+| `get`、`post`、`put`、`patch`、`del`、`head`、`options` | 一个限定到某个 HTTP 方法的路由叶子。         |
+| `form(pattern)`                                         | 同一 URL 上的 `GET` 页面与 `POST` action。   |
+| `route(prefix, defs)`                                   | 子模式相对于前缀的嵌套路由映射。             |
+| `resources(pattern)`                                    | 约定式的集合资源路由。                       |
+| `resource(pattern)`                                     | 约定式的单例资源路由。                       |
+
+路由也可以只用字符串定义。例如 `webhook: "/webhooks/github"` 匹配任何请求方法，
+因此当方法重要时，action 必须检查 `context.method`。
+
+当某个路由区域需要独立归属时，`route(prefix, routes)` 把它的路由映射组合到共享前缀下。
+该区域拥有自己的名称和相对模式，应用决定这个分组放在哪里：
+
+```ts filename=app/actions/albums/routes.ts
+import { get, route } from "remix/routes";
+
+export const albumRoutes = route({
+  index: get("/"),
+  show: get("/:albumId"),
+});
+```
+
+把这个路由映射组合进应用的 URL 结构：
+
+```ts filename=app/routes.ts
+import { route } from "remix/routes";
+
+import { albumRoutes } from "./actions/albums/routes.ts";
+
+export const routes = route({
+  albums: route("/albums", albumRoutes),
+});
+
+// routes.albums.index -> GET /albums
+// routes.albums.show  -> GET /albums/:albumId
+```
+
+`form(...)` 创建常见的“页面 + 提交”形状，让页面和它的 action 位于同一 URL：
+
+```ts filename=app/routes.ts
+import { form, route } from "remix/routes";
+
+export const routes = route({
+  albums: {
+    edit: form("/albums/:albumId/edit"),
+  },
+});
+
+// routes.albums.edit.index  -> GET  /albums/:albumId/edit
+// routes.albums.edit.action -> POST /albums/:albumId/edit
+```
+
+有了这种路由形状，`POST` action 可以把[校验失败](/docs/forms-and-mutations)连同表单一起返回，
+或者[保存后重定向](/docs/forms-and-mutations)。
+
+`resources(...)` 为一个集合创建七条约定式路由：`index`、`new`、`show`、`create`、`edit`、
+`update` 与 `destroy`。`resource(...)` 为单例创建路由——例如 `/profile` 这种 URL 中没有 ID 的单一资源——
+并省略 `index`，因为不存在集合页面。
+
+`only` 保留约定形状的一部分，`param` 修改默认的路径变量名 `id`：
+
+```ts filename=app/routes.ts
+import { resources, route } from "remix/routes";
+
+export const routes = route({
+  albums: resources("/albums", {
+    only: ["index", "show", "create"],
+    param: "albumId", // 默认是 "id"
+  }),
+});
+
+// routes.albums.index  -> GET    /albums
+// routes.albums.show   -> GET    /albums/:albumId
+// routes.albums.create -> POST   /albums
+```
+
+这些辅助函数产生的是普通路由映射与叶子，因此可以和手写定义自由嵌套。
+把映射传给 `createController(...)`，再像手写映射一样用 `router.map(...)` 注册即可。
+
+## 控制器与 action
+
+一个控制器拥有某个路由映射中**直接叶子**的请求处理。它可以运行这些 action 共享的
+[中间件](/docs/request-handling)，其 `actions` 对象为每个叶子提供一个处理器。
+`createController(...)` 用映射为每个 action 名称和参数提供类型，同时把请求处理行为留在路由映射之外。
+
+给定带 `show: get("/albums/:albumId")` 叶子的 `routes.albums` 映射，该映射的控制器需要提供 `show` action：
+
+```tsx filename=app/actions/albums/controller.tsx
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+
+export default createController(routes.albums, {
+  actions: {
+    show(context) {
+      return new Response(`Album: ${context.params.albumId}`);
+    },
+  },
+});
+```
+
+`show` action 接收请求上下文并返回 Web `Response`。由于它的路由定义为
+`get('/albums/:albumId')`，路由匹配时 `context.params.albumId` 的类型就是 `string`。
+Remix 在 action 运行前完成模式匹配，因此 action 不需要解析 URL 或防止 `albumId` 缺失。
+
+每个 action 都会收到以下内置的请求上下文属性与方法：
+
+| 属性或方法                | 提供的内容                                                       |
+| ------------------------- | ---------------------------------------------------------------- |
+| `context.request`         | 原始的 Web `Request`。                                           |
+| `context.url`             | 解析后的 [`URL`](https://developer.mozilla.org/en-US/docs/Web/API/URL)。 |
+| `context.method`          | 请求方法。                                                       |
+| `context.params`          | 从匹配的路由模式解析出的类型化值。                               |
+| `context.headers`         | 请求头的可变 [`Headers`](https://developer.mozilla.org/en-US/docs/Web/API/Headers) 副本。 |
+| `context.router`          | 处理该请求的路由器。                                             |
+| `context.set(key, value)` | 在共享上下文中保存请求作用域的值。                               |
+| `context.get(key)`        | 读取某个上下文键下的请求作用域值。                               |
+| `context.has(key)`        | 某个上下文键是否已保存值。                                       |
+
+中间件可以用类型化属性扩展这个基础上下文，例如 `context.formData` 或 `context.render`。
+这些属性取决于应用的中间件栈，因此不是固定列表。来自
+`remix/middleware/method-override` 的内置 `methodOverride()` 中间件刻意修改了一个基础值：
+它在路由匹配前更新 `context.method`，让带 `_method` 字段的 `POST` 表单可以指向
+`PUT`、`PATCH` 或 `DELETE` 路由，而 `context.request.method` 仍是原始方法。
+
+控制器可以拥有自己的中间件，作用于它拥有的每个 action。当只有一条路由需要某个中间件时，
+把该 action 定义为带 `middleware` 和 `handler` 的对象。下面只有 `POST` action 解析 `FormData`，
+`index` 页面跳过这项工作：
+
+```tsx filename=app/actions/albums/edit/controller.tsx
+import { formData } from "remix/middleware/form-data";
+import { createController } from "remix/router";
+
+import { routes } from "../../../routes.ts";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    index() {
+      return new Response("Edit album");
+    },
+    action: {
+      middleware: [formData()],
+      handler(context) {
+        let title = String(context.formData.get("title") ?? "");
+
+        return new Response(`Updated ${title}`, { status: 200 });
+      },
+    },
+  },
+});
+```
+
+执行顺序是：路由器中间件 → 控制器中间件 → action 中间件 → action 处理器。
+路由器中间件在路由匹配前运行，因此能看到每个请求。
+
+## 响应、重定向、头部与错误
+
+Action 返回 Web `Response` 对象。要渲染页面，把 `remix/middleware/render` 中的 `render()`
+加入路由器。该中间件提供 `context.render(...)`，它用[流式渲染器](/docs/streaming-ui-with-frames)
+把 Remix 组件树变成 HTML 响应。安装中间件后，在 action 中使用：
+
+```tsx filename=app/actions/albums/controller.tsx
+// 在 show action 内：
+return context.render(<AlbumPage album={album} />);
+```
+
+结果仍然是普通的 Web `Response`。一个 action 可以渲染页面、返回文本或 JSON、重定向浏览器、
+发送文件，或返回错误响应。
+
+非法输入、冲突、记录不存在等**预期结果**也应当返回带有合适状态码的 `Response`。
+抛出的错误留给**意外失败**。如果 action 或中间件抛出异常，`router.fetch(...)` 会 reject，
+服务器边界可以记录错误并[返回 `500` 响应](/docs/errors-and-cancellation)。
+
+文本响应可以简单到：
+
+```ts
+return new Response("Album not found", { status: 404 });
+```
+
+`redirect(...)` 创建重定向响应。编辑 action 可以用
+[`303 See Other`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/303)
+实现 POST-重定向-GET 流程：浏览器用 `GET` 跟随重定向，因此刷新目标页面不会重复提交表单：
+
+```ts filename=app/actions/albums/edit/controller.tsx
+import { redirect } from "remix/response/redirect";
+
+import { routes } from "../../../routes.ts";
+
+// 在 action 内：
+return redirect(routes.albums.show.href({ albumId: context.params.albumId }), 303);
+```
+
+对于 Remix 组件渲染管线之外的 HTML，`remix/html-template` 的 `html` 模板标签会转义插值，
+`createHtmlResponse(...)` 设置 HTML content type 并添加 doctype：
+
+```ts
+import { html } from "remix/html-template";
+import { createHtmlResponse } from "remix/response/html";
+
+// 在 action 内：
+return createHtmlResponse(html`<p>${album.title}</p>`);
+```
+
+Remix 的 `redirect(...)` 和 `createHtmlResponse(...)`，与 `new Response(...)`、
+[`Response.json(...)`](https://developer.mozilla.org/en-US/docs/Web/API/Response/json_static)
+一样，在需要设置状态或头部时接受标准的 `ResponseInit` 选项。上面的数字 `303` 是
+`redirect(...)` 支持的简写。
+
+```ts
+// 在 action 内：
+return Response.json(album, {
+  headers: {
+    "Cache-Control": "no-store",
+  },
+});
+```
+
+`context.headers` 表示**请求头**，而不是响应头。控制器没有单独的响应头 API，
+因为 action 返回标准的 Web 响应。直接使用 Web `Headers`，或使用 `remix/headers`
+中的类型化访问器（如 `Cache-Control`、`Set-Cookie`），让头部处理更清晰。
+
+## 映射控制器
+
+`createController(...)` 定义控制器处理什么，`router.map(...)` 注册它。由于控制器只拥有路由映射的
+直接叶子，嵌套映射若有自己的 action，需要单独注册：
+
+```ts filename=app/router.ts
+import { createRouter } from "remix/router";
+
+import rootController from "./actions/controller.tsx";
+import albumsController from "./actions/albums/controller.tsx";
+import albumsEditController from "./actions/albums/edit/controller.tsx";
+import { routes } from "./routes.ts";
+
+export const router = createRouter();
+
+router.map(routes, rootController);
+router.map(routes.albums, albumsController);
+router.map(routes.albums.edit, albumsEditController);
+```
+
+在这些映射下：
+
+- `rootController` 处理根级叶子，例如 `home`。
+- `albumsController` 处理 `routes.albums.show`。
+- `albumsEditController` 处理 `routes.albums.edit.index` 与 `routes.albums.edit.action`。
+
+`router.map(...)` 是路由映射与控制器的应用级约定。`router.get(...)`、`router.post(...)`
+这类直接方法可以注册单个处理器，无需控制器：
+
+```ts filename=app/router.ts
+// 创建路由器之后：
+router.get("/health", () => new Response("OK"));
+```
+
+控制器中间件遵循同样的归属规则：`albumsController` 上的中间件对 `routes.albums.show` 运行，
+但不会对 `routes.albums.edit.index` 或 `routes.albums.edit.action` 运行。
+
+Remix 会在路由器初始化时检查这一点。如果控制器缺少它拥有的某个叶子对应的 action，
+应用开始处理请求之前就会抛出错误。
+
+## 组织路由私有的代码
+
+文件树通常与路由映射保持相同形状：
+
+```txt
+app/actions/
+├── controller.tsx              # routes
+└── albums/
+    ├── controller.tsx          # routes.albums
+    ├── routes.ts               # albumRoutes
+    └── edit/
+        ├── controller.tsx      # routes.albums.edit
+        └── page.tsx            # 路由局部 UI
+```
+
+当某个路由分支有自己嵌套的路由时，匹配的目录和控制器能让父控制器更小，
+也让每个路由拥有者从文件路径上一目了然。
+
+把路由局部 UI 放在渲染它的控制器旁边，因此 `albums.edit` 的页面与表单属于
+`actions/albums/edit/`。被多个路由区域共享的组件属于 `ui/`。两者都遵循相同的
+[组件模型](/docs/rendering-ui)。

@@ -1,0 +1,21 @@
+{
+  "title": "Remix 指南",
+  "pages": [
+    "index",
+    "start-here",
+    "routing-and-controllers",
+    "request-handling",
+    "rendering-ui",
+    "interactivity",
+    "streaming-ui-with-frames",
+    "animation",
+    "data-and-validation",
+    "forms-and-mutations",
+    "auth-sessions-security",
+    "files-and-assets",
+    "errors-and-cancellation",
+    "testing",
+    "cli-and-tooling",
+    "production"
+  ]
+}

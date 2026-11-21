@@ -1,0 +1,696 @@
+---
+title: 认证、会话与安全
+description: Remix 如何保存每浏览器状态、解析身份、保护路由并防御浏览器请求边界。
+icon: ShieldCheck
+---
+
+签名 Cookie、会话与已认证身份是不同的层。按这个顺序构建它们，
+然后围绕会改变状态的路由添加授权与浏览器来源防御。
+
+本章使用的包：
+
+| 关注点             | 包                                       |
+| ------------------ | ---------------------------------------- |
+| Cookie 解析与签名  | `remix/cookie`                           |
+| 会话数据与存储     | `remix/session`、`remix/session-storage/*` |
+| 会话中间件         | `remix/middleware/session`               |
+| 登录协议           | `remix/auth`                             |
+| 请求身份与路由保护 | `remix/middleware/auth`                  |
+| CSRF / 跨源 / CORS | `remix/middleware/csrf`、`cop`、`cors`   |
+
+## 普通 Cookie 与会话
+
+浏览器控制的偏好或一个小的签名值，使用 `remix/cookie`。
+当状态需要服务端管理的生命周期、flash 值、ID 轮换，或防篡改存储（如登录状态与购物车）时，
+使用 `remix/session`。
+
+`createCookie(name, options)` 返回一个类型化 Cookie。它负责解析请求的 `Cookie` 头，
+并序列化响应所需的 `Set-Cookie` 值：
+
+```ts
+import { createCookie } from "remix/cookie";
+
+let sessionCookie = createCookie("session", {
+  httpOnly: true,
+  secrets: ["s3cret1"],
+  secure: true,
+  sameSite: "lax",
+  path: "/",
+});
+
+sessionCookie.name; // "session"
+sessionCookie.httpOnly; // true
+sessionCookie.secure; // true
+sessionCookie.signed; // true
+
+// 从请求的 `Cookie` 头读取
+let value = await sessionCookie.parse(request.headers.get("Cookie"));
+
+// 写入响应的 `Set-Cookie` 头
+let response = new Response("Hello, world!", {
+  headers: {
+    "Set-Cookie": await sessionCookie.serialize(value),
+  },
+});
+```
+
+`cookie.secure` 与 `cookie.httpOnly` 在未配置时返回 `undefined`，
+让中间件能区分“默认值”与显式的 `false`。需要布尔值时使用 `cookie.secure ?? false`。
+直接序列化时，未启用的属性会被省略；partitioned Cookie 总是启用 `Secure`。
+
+## Cookie 配置与密钥轮换
+
+有意识地设置这些属性：
+
+- **`httpOnly`**：阻止 JavaScript 读取，登录 Cookie 必须开启。
+- **`sameSite`**：`lax` 是多数会话 Cookie 的合理默认值；跨站嵌入场景才考虑 `none`（必须配合 `secure`）。
+- **`secure`**：只通过 HTTPS 发送。本地 HTTP 开发时不要硬编码为 `true`，交给会话中间件按请求 URL 判断。
+- **`path`**：通常为 `/`。
+- **`maxAge` / `expires`**：限制会话寿命。
+
+提供 `secrets` 时，签名自动启用（HMAC-SHA256）。轮换密钥时，把新的密钥放在数组最前面，
+旧 Cookie 仍可解析；新序列化的 Cookie 使用新密钥签名：
+
+```ts
+// 开始只有一个密钥
+let sessionCookie = createCookie("session", { secrets: ["secret1"] });
+
+// 轮换：新密钥在前，旧密钥仍可验证
+sessionCookie = createCookie("session", { secrets: ["secret2", "secret1"] });
+```
+
+签名只能防止篡改，**不能隐藏内容**。不要把用户不该看到的秘密放进客户端可读的 Cookie。
+默认值以 base64 编码的 UTF-8 存储；也可以用自定义 `encode` / `decode`，
+但返回值必须只包含合法的 Cookie 字符，Unicode 需要自行转义。自定义编码是完整编解码器，
+配置了 `secrets` 时会对返回值签名，不再套默认 base64。
+
+## 会话中间件与存储策略
+
+`remix/session` 提供一个与会话存储无关的数据模型。标准流程是：
+从请求读取会话 → 修改 → 保存回存储 → 把 Cookie 写进响应。
+
+```ts
+import { createCookieSessionStorage } from "remix/session-storage/cookie";
+
+let storage = createCookieSessionStorage();
+
+async function handleRequest(cookie: string | null) {
+  let session = await storage.read(cookie);
+  session.set("count", Number(session.get("count") ?? 0) + 1);
+  return {
+    session,
+    cookie: await storage.save(session),
+  };
+}
+```
+
+实际应用不必手写这套流程。`remix/middleware/session` 的 `session(cookie, storage)`
+会读取会话、暴露为 `context.session`（或 `context.get(Session)`），并自动把变更写回响应：
+
+```ts
+import { createCookie } from "remix/cookie";
+import { session } from "remix/middleware/session";
+import { createCookieSessionStorage } from "remix/session-storage/cookie";
+import { createRouter } from "remix/router";
+
+let sessionCookie = createCookie("__session", {
+  secrets: ["s3cr3t"], // 会话 Cookie 必须签名
+  secure: true,
+  sameSite: "lax",
+});
+
+let sessionStorage = createCookieSessionStorage();
+
+let router = createRouter({
+  middleware: [session(sessionCookie, sessionStorage)],
+});
+
+router.get("/", (context) => {
+  context.session.set("count", Number(context.session.get("count") ?? 0) + 1);
+  return new Response(`Count: ${context.session.get("count")}`);
+});
+```
+
+会话 Cookie 默认 `httpOnly`。未显式配置 `secure` 时，中间件会为 HTTPS 请求 URL 添加 `Secure`，
+对 HTTP（包括本地开发）省略；显式 `secure: true` / `false` 优先。
+如果代理终止了 HTTPS，要让服务器暴露原始 HTTPS URL，或显式设置 `secure: true`。
+
+按大小、持久性、运行时与是否需要多进程共享选择存储：
+
+| 存储                                         | 特点                                                       | 适用                                 |
+| -------------------------------------------- | ---------------------------------------------------------- | ------------------------------------ |
+| `remix/session-storage/cookie`               | 数据全在 Cookie 里，无需后端；受浏览器约 4 KB 上限限制     | 小型会话、无额外基础设施             |
+| `remix/session-storage/fs`                   | 持久文件系统，容量大                                       | 单机或共享卷上的生产部署             |
+| `remix/session-storage/memory`               | 进程内，重启即丢失                                         | 测试与本地开发                       |
+| `remix/session-storage/redis`                | 多进程共享，带 TTL                                         | 多副本生产环境                       |
+| `remix/session-storage/memcache`             | 多进程共享                                                 | 已有 Memcache 的部署                 |
+
+```ts
+import { createFsSessionStorage } from "remix/session-storage/fs";
+
+let sessionStorage = createFsSessionStorage("/tmp/sessions");
+```
+
+### 会话寿命
+
+在会话 Cookie 上配置 `maxAge`（秒）或 `expires`（`Date`）来限制中间件接受它的时间。
+中间件把过期时间与存储值一起写进签名 Cookie，并在加载会话数据前检查。
+这适用于所有存储后端。
+
+`maxAge` 优先于 `expires`，并在会话更新产生新 Cookie 时重新开始计时；单纯读取不会续期。
+`expires` 是固定截止时间。两者都不配置时没有寿命限制，后端 TTL 仍独立生效。
+旧版本发出的 Cookie 不含过期元数据；配置寿命后，它们会开始一个新会话。
+
+## 会话值、flash 数据、轮换与销毁
+
+会话对象提供：
+
+- `get(key)` / `set(key, value)` / `unset(key)`
+- `flash(key, value)`：只在**下一个**请求可用，随后移除
+- `regenerateId(deleteOld?)`：生成新会话 ID
+- `destroy()`：下次保存时清空存储中的全部数据，并清除客户端会话 ID
+
+flash 数据适合“保存成功”这类一次性提示：
+
+```ts
+async function requestSubmit(cookie: string | null) {
+  let session = await storage.read(cookie);
+  session.flash("message", "success!");
+  return { session, cookie: await storage.save(session) };
+}
+```
+
+它在设置的同一个请求中不可见（该响应通常是重定向），在下一个请求可见，之后消失。
+
+登录或其他权限变化后**必须**轮换会话 ID，防止会话固定攻击：
+
+```ts
+session.set("userId", "mj");
+session.regenerateId();
+```
+
+`regenerateId(true)` 会在保存时删除旧会话数据，安全性更高；
+但移动端在弱网下可能依赖旧 ID 恢复会话，需权衡。
+
+登出时使用 `session.destroy()`，而不是只删除一个身份字段：
+
+```ts
+router.post("/logout", ({ session }) => {
+  session.destroy();
+  return redirect("/");
+});
+```
+
+## 凭据登录与登出
+
+`remix/auth` 提供五个原语：
+
+- `verifyCredentials(provider, context)`：解析并验证提交的凭据，返回认证结果或 `null`
+- `startExternalAuth(provider, context, options?)`：把进行中的 OAuth 事务存入会话，返回提供者重定向
+- `finishExternalAuth(provider, context, options?)`：校验回调、清除事务，返回 `{ result, returnTo? }`
+- `refreshExternalAuth(provider, tokens)`：用 `refreshToken` 换取新的 token bundle
+- `completeAuth(context)`：轮换当前会话 ID，并返回用于写入认证记录的会话
+
+路由负责重定向、flash 与面向用户的行为；`remix/auth` 负责协议。
+
+用 `createCredentialsAuthProvider()` 包装自己的密码校验：
+
+```ts
+import { completeAuth, createCredentialsAuthProvider, verifyCredentials } from "remix/auth";
+import { redirect } from "remix/response/redirect";
+
+let passwordProvider = createCredentialsAuthProvider({
+  parse(context) {
+    let formData = context.formData;
+    if (formData == null) {
+      throw new Error("Expected formData() middleware before verifyCredentials()");
+    }
+
+    return {
+      email: String(formData.get("email") ?? ""),
+      password: String(formData.get("password") ?? ""),
+    };
+  },
+  async verify({ email, password }) {
+    return users.verifyPassword(email, password);
+  },
+});
+```
+
+登录 action 中先验证，再 `completeAuth(context)`，最后写入应用自有的认证记录：
+
+```ts
+router.post(routes.auth.login.action, async (context) => {
+  let user = await verifyCredentials(passwordProvider, context);
+
+  if (user == null) {
+    context.session.flash("error", "Invalid email or password");
+    return redirect(routes.auth.login.index.href());
+  }
+
+  let session = completeAuth(context);
+  session.set("auth", { userId: user.id });
+
+  return redirect(routes.app.dashboard.href());
+});
+```
+
+登出时清除认证记录并轮换或销毁会话：
+
+```ts
+router.post(routes.auth.logout, ({ session }) => {
+  session.unset("auth");
+  session.regenerateId(true);
+  return redirect(routes.auth.login.index.href());
+});
+```
+
+**顺序很重要**：`session()` 必须在 `formData()` 与 `verifyCredentials()` 之前，
+`completeAuth()` 必须在写入认证记录之前。
+
+## OAuth 与 OIDC 登录
+
+提供者在模块作用域创建一次，以便启动时校验配置，并保持回调 URL 稳定。
+内置支持 Google、Microsoft、Okta、Auth0、GitHub、Facebook 与 X：
+
+```ts
+import {
+  createAuth0AuthProvider,
+  createFacebookAuthProvider,
+  createGitHubAuthProvider,
+  createGoogleAuthProvider,
+  createMicrosoftAuthProvider,
+  createOktaAuthProvider,
+  createXAuthProvider,
+} from "remix/auth";
+
+let googleProvider = createGoogleAuthProvider({
+  clientId: env.GOOGLE_CLIENT_ID,
+  clientSecret: env.GOOGLE_CLIENT_SECRET,
+  redirectUri: new URL("/auth/google/callback", env.APP_ORIGIN),
+  authorizationParams: {
+    access_type: "offline",
+    prompt: "consent",
+  },
+});
+```
+
+OIDC 提供者默认在 `/.well-known/openid-configuration` 做发现；
+可以用 `metadata` 跳过发现，或用 `discoveryUrl` 指定其他位置。
+默认 scope 为 `openid profile email`。Google 提供者直接内置端点，无需发现请求。
+Microsoft 需要 `tenant`，Okta 需要完整 issuer，Auth0 需要 domain。
+
+OAuth 流程由三个路由组成：
+
+```ts
+router.get(routes.auth.google.login, (context) =>
+  startExternalAuth(googleProvider, context, {
+    returnTo: context.url.searchParams.get("returnTo"),
+  }),
+);
+
+router.get(routes.auth.google.callback, async (context) => {
+  let { result, returnTo } = await finishExternalAuth(googleProvider, context);
+
+  let user = await users.upsertFromGoogle(result.profile);
+  await persistProviderTokens(user.id, result.tokens);
+
+  let session = completeAuth(context);
+  session.set("auth", { userId: user.id });
+
+  return redirect(returnTo ?? routes.app.dashboard.href());
+});
+```
+
+`returnTo` 只接受以 `/` 开头的本地路径（可带查询与片段）。
+帮助函数会规范化路径，并拒绝解析到其他来源或以 `//` 开头的目标。
+
+需要再次调用提供者 API 时，读取存储的 token bundle，仅在过期时刷新，并存回：
+
+```ts
+async function getGoogleAccessToken(userId: string) {
+  let tokens = await readStoredProviderTokens(userId);
+  if (tokens == null) return null;
+
+  if (tokens.expiresAt != null && tokens.expiresAt.getTime() <= Date.now()) {
+    tokens = (await refreshExternalAuth(googleProvider, tokens)).tokens;
+    await persistProviderTokens(userId, tokens);
+  }
+
+  return tokens.accessToken;
+}
+```
+
+只有请求了离线访问的提供者才会返回 refresh token，例如 Google 的
+`authorizationParams: { access_type: "offline" }`，或 X 的 `offline.access` scope。
+
+自定义 OIDC 提供者使用 `createOIDCAuthProvider()`，并用 `mapProfile()` 把 claims
+映射为应用自己的资料类型：
+
+```ts
+import { createOIDCAuthProvider } from "remix/auth";
+
+let companyProvider = createOIDCAuthProvider({
+  name: "company",
+  issuer: "https://sso.acme.com",
+  clientId: "acme-web",
+  clientSecret: env.ACME_CLIENT_SECRET,
+  redirectUri: new URL("/auth/company/callback", env.APP_ORIGIN),
+  authorizationParams: { prompt: "login" },
+  mapProfile({ claims }) {
+    return {
+      id: claims.sub,
+      email: claims.email ?? null,
+      name: claims.name ?? claims.preferred_username ?? "Unknown user",
+    };
+  },
+});
+```
+
+不支持 OIDC 的提供者用 `createOAuthProvider()` 实现授权、回调与可选刷新钩子。
+`transaction.providerState` 是提供者自有的不透明数据，会话存储不保证机密性，
+敏感值必须先加密。
+
+## 用 auth 中间件解析请求身份
+
+`remix/middleware/auth` 负责请求时的身份解析与路由保护，
+与负责登录协议的 `remix/auth` 分开。
+
+`auth({ schemes })` 按顺序尝试每个方案，直到某个方案返回成功或失败；
+都未命中时请求视为匿名。结果存入 `context.auth`（或 `context.get(Auth)`），
+形式是 `{ ok: true, identity, method }` 或 `{ ok: false, error? }`。
+
+内置方案：
+
+- `createBearerTokenAuthScheme()`：读取 `Authorization: Bearer <token>`
+- `createAPIAuthScheme()`：读取自定义请求头中的 API key
+- `createSessionAuthScheme()`：读取 `session()` 中间件加载的会话认证记录
+
+会话方案把持久化的 `{ userId }` 还原成当前用户：
+
+```ts
+import { auth, createSessionAuthScheme, requireAuth } from "remix/middleware/auth";
+
+let router = createRouter({
+  middleware: [
+    session(sessionCookie, sessionStorage),
+    auth({
+      schemes: [
+        createSessionAuthScheme({
+          read(session) {
+            return session.get("auth") as { userId: string } | null;
+          },
+          verify(value) {
+            return users.getById(value.userId);
+          },
+          invalidate(session) {
+            session.unset("auth");
+          },
+        }),
+      ],
+    }),
+  ],
+});
+```
+
+自定义方案只要有 `name` 与 `authenticate(context)`。`authenticate` 可以返回：
+
+- `null` / `undefined`：跳过该方案
+- `{ status: "success", identity }`：认证成功，`name` 成为 `auth.method`
+- `{ status: "failure", code?, message?, challenge? }`：停止并返回认证错误
+
+```ts
+import type { AuthScheme } from "remix/middleware/auth";
+
+function createTrustedProxyAuthScheme(): AuthScheme<User> {
+  return {
+    name: "trusted-proxy",
+    async authenticate(context) {
+      let email = context.headers.get("X-Forwarded-Email");
+      if (email == null) return;
+
+      let user = await users.getByEmail(email);
+      if (user == null) {
+        return {
+          status: "failure",
+          code: "invalid_credentials",
+          message: "Unknown forwarded user",
+        };
+      }
+
+      return { status: "success", identity: user };
+    },
+  };
+}
+```
+
+只有当应用只能通过受信任、会设置这些头的基础设施访问时才使用这种方案。
+
+## 用 requireAuth 保护路由
+
+`requireAuth()` 必须在 `auth()` 之后运行；否则会抛出错误。
+未认证时默认返回 `401 Unauthorized`。用 `onFailure(context, auth)` 定制重定向、
+frame HTML 或 JSON：
+
+```ts
+import { redirect } from "remix/response/redirect";
+
+let requireUser = requireAuth({
+  onFailure(context) {
+    let isFrameRequest = context.request.headers.get("X-Remix-Frame") === "true";
+
+    if (isFrameRequest) {
+      return new Response("<p>Not authorized</p>", {
+        status: 401,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+
+    return redirect("/login");
+  },
+});
+```
+
+把它用作控制器或 action 中间件：
+
+```ts
+export default createController(routes.app, {
+  middleware: [requireUser],
+  actions: {
+    dashboard(context) {
+      if (!context.auth.ok) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      return Response.json({
+        id: context.auth.identity.id,
+        method: context.auth.method,
+      });
+    },
+  },
+});
+```
+
+失败结果带有 `challenge` 时，会自动写入 `WWW-Authenticate`，
+支持 bearer/API 挑战的客户端无需额外头部处理。
+**注意**：一个控制器上的保护不会流入为嵌套路由映射创建的控制器。
+
+只用简单认证 Cookie、不需要会话身份查询时，可以写一个小方案，同时继续使用 `requireAuth()`：
+
+```ts
+let authCookie = createCookie("__auth", {
+  httpOnly: true,
+  sameSite: "lax",
+  path: "/",
+});
+
+let authCookieScheme: AuthScheme<"demo-user"> = {
+  name: "auth-cookie",
+  async authenticate(context) {
+    let value = await authCookie.parse(context.headers.get("Cookie"));
+    if (value !== "1") return;
+    return { status: "success", identity: "demo-user" };
+  },
+};
+```
+
+## 对每个资源操作进行授权
+
+认证说明**是谁**发起了请求；授权决定该身份是否可以读取或修改**这条记录**。
+即使 `requireAuth()` 已经运行，也要在 action 或数据写入中检查所有权、角色、租户与状态转换：
+
+```ts
+async function loadEditableAlbum(context, albumId) {
+  if (!context.auth.ok) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let album = await context.db.find(albums, albumId);
+  if (album === null) {
+    return new Response("Not Found", { status: 404 });
+  }
+
+  let canEdit =
+    context.auth.identity.role === "admin" || album.ownerId === context.auth.identity.id;
+
+  // 不泄露记录是否存在：无权限统一返回 404
+  if (!canEdit) {
+    return new Response("Not Found", { status: 404 });
+  }
+
+  return album;
+}
+```
+
+授权检查应复用同一个数据加载路径，避免出现“检查时与写入时看到不同记录”的竞态。
+批量或列表查询也要按身份加作用域（例如 `where owner_id = ?`），
+不要只在详情 action 里检查。
+
+## CSRF 同步令牌
+
+`remix/middleware/csrf` 提供基于会话的同步令牌与不安全请求的来源校验。
+它要求 `session()` 先运行：
+
+```ts
+import { csrf, getCsrfToken } from "remix/middleware/csrf";
+
+let router = createRouter({
+  middleware: [session(sessionCookie, sessionStorage), csrf()],
+});
+
+router.get("/form", (context) => {
+  let token = getCsrfToken(context);
+
+  return new Response(`
+    <form method="post" action="/submit">
+      <input type="hidden" name="_csrf" value="${token}" />
+      <button type="submit">Submit</button>
+    </form>
+  `);
+});
+```
+
+默认令牌来源顺序：
+
+1. 请求头 `X-Csrf-Token`、`X-Xsrf-Token`、`Csrf-Token`
+2. 表单字段 `_csrf`（需要 `formData()` 解析请求体）
+
+查询参数默认不读取，避免令牌出现在日志、浏览器历史和复制链接中。
+需要时用 `value(context)` 显式替换默认查找（它不是追加回退，而是完整替代）：
+
+```ts
+csrf({
+  value(context) {
+    return context.url.searchParams.get("_csrf");
+  },
+});
+```
+
+对原始方法为 `POST`、`PUT`、`PATCH`、`DELETE` 的请求，中间件同时校验令牌与来源：
+
+- 默认：存在 `Origin` 或 `Referer` 时做同源校验
+- 自定义：`origin` 可以是字符串、正则、数组或函数
+- 缺少来源：由 `allowMissingOrigin` 控制，默认 `true`
+
+设置 `allowMissingOrigin: false` 可以要求不安全请求必须带来源头。
+同步令牌才是主要防御，来源检查是附加信号。浏览器已提供 `Sec-Fetch-Site`
+等更强信号、且部署能保证所有前提时，可以改用下面的无令牌模型。
+
+## 无令牌跨源保护
+
+`remix/middleware/cop` 对应 Go 的 `CrossOriginProtection`，不需要会话或令牌：
+
+```ts
+import { cop } from "remix/middleware/cop";
+
+let router = createRouter({
+  middleware: [cop()],
+});
+```
+
+对原始方法不安全（`POST`、`PUT`、`PATCH`、`DELETE`）的请求：
+
+- 允许 `Sec-Fetch-Site: same-origin`
+- 允许 `Sec-Fetch-Site: none`
+- 其他值拒绝，除非匹配受信任来源或不安全绕过
+- 缺少 `Sec-Fetch-Site` 时比较 `Origin` 与请求主机
+- 两者都缺少时放行（兼容旧客户端与非浏览器调用）
+
+```ts
+cop({
+  trustedOrigins: ["https://admin.example.com"],
+  insecureBypassPatterns: ["POST /webhooks/{provider}", "/healthz"],
+});
+```
+
+受信任来源必须是精确的 `scheme://host[:port]`。绕过模式支持方法前缀、精确路径、
+尾部斜杠子树、`{name}` 单段通配与 `{name...}` 尾部通配。
+这些模式会有意削弱保护，只用于 webhook、健康检查等端点。
+
+`cop()` 只是浏览器来源守卫，不是通用 CSRF 方案。
+需要两者时可以叠加，让 `cop()` 先做早期拒绝，再由 `csrf()` 校验令牌：
+
+```ts
+let router = createRouter({
+  middleware: [cop(), session(sessionCookie, sessionStorage), csrf()],
+});
+```
+
+## CORS 不是认证或 CSRF 防护
+
+只在浏览器必须跨源调用的端点上使用 `cors()`：
+
+```ts
+import { cors } from "remix/middleware/cors";
+
+let router = createRouter({
+  middleware: [
+    cors({
+      origin: ["https://app.example.com", "https://admin.example.com"],
+      credentials: true,
+      exposedHeaders: ["X-Request-Id"],
+    }),
+  ],
+});
+```
+
+`origin` 支持 `'*'`、单个精确来源、`RegExp`、数组、`true`（反射请求来源）与函数。
+省略时默认 `'*'`。启用 `credentials: true` 时必须显式配置来源：
+浏览器不会向带凭据的请求暴露通配符来源的响应；显式 `origin: '*'` 会反射来源并添加 `Vary: Origin`。
+
+预检默认以 `204` 短路返回：
+
+```ts
+cors({
+  methods: ["GET", "POST", "PATCH"],
+  allowedHeaders: ["Authorization", "Content-Type"],
+  maxAge: 600,
+});
+```
+
+`allowedHeaders` 也可以是函数，根据 `Access-Control-Request-Headers` 返回允许列表。
+用 `preflightContinue: true` 让下游 `OPTIONS` 处理器接管预检，
+用 `preflightStatusCode` 修改短路状态码。私有网络预检需显式开启 `allowPrivateNetwork`。
+
+CORS 主要是**浏览器**的强制机制。被拒绝的非预检请求仍会到达处理器，
+因此端点本身必须做认证与授权。CORS 响应头不会授权调用者，
+也不能阻止非浏览器客户端访问端点。
+
+## 信任浏览器加载的 HTML 与模块
+
+初始文档以及 frame 解析器返回的 HTML 是受信任的应用内容。
+它们可以选择 client entry 模块，并添加 import map、样式和嵌套 frame。
+
+默认 frame 解析器只从文档来源获取，但 Remix **不会**净化返回的 HTML，
+同源用户生成内容默认也不安全。规则：
+
+- 把用户内容渲染为转义文本。
+- 只有在净化之后才通过 [`unsafeHTML()`](/docs/rendering-ui)传入原始 HTML。
+- 在 `loadModule` 中执行模块来源策略，只加载允许的模块。
+- 上传文件按内容而不是文件名判断类型；不确定时用
+  `Content-Disposition: attachment` 下载而不是内联渲染。
+- 内部记录 ID 与异常细节不要进入公开错误响应体。
+
+把这些边界与本章前面的层次组合起来：Cookie 提供完整性，会话提供生命周期，
+`auth()` 解析身份，`requireAuth()` 拒绝匿名请求，授权检查决定具体记录可否操作，
+`cop()` / `csrf()` 阻止跨源写入，CORS 只控制浏览器可读性。

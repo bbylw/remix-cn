@@ -1,0 +1,507 @@
+---
+title: 渲染 UI
+description: 如何用 Remix 组件、props、context、文档外壳、样式与官方 UI 构建页面。
+icon: Layout
+---
+
+Remix 页面就是组件树。action 把一棵树传给 `context.render(...)`，渲染中间件把它变成 HTML
+`Response`。本章涵盖 `remix/component` 中的组件、props、局部状态与 context，
+服务端与浏览器各自运行什么，共享文档外壳，用 `css(...)` 与
+[级联层](https://developer.mozilla.org/en-US/docs/Web/CSS/@layer)编写样式，
+`@remix-run/ui` 中的无头原语，以及跳过组件运行时的 HTML 响应。
+
+组件模型在服务端与浏览器中完全相同。页面不需要浏览器 JavaScript，
+除非其中一部分要处理事件或使用浏览器 API；那些组件需要一个[水合边界](/docs/interactivity)。
+
+## Remix 组件模型
+
+一个 Remix 组件是返回渲染函数的设置函数。Remix 创建组件时，设置只运行一次；
+渲染在设置之后立即运行，并在组件每次更新时再次运行。
+
+```tsx filename=app/ui/album-heading.tsx
+import type { Handle } from "remix/component";
+
+type AlbumHeadingProps = {
+  artist: string;
+  title: string;
+};
+
+export function AlbumHeading(handle: Handle<AlbumHeadingProps>) {
+  // 设置：这个组件实例只运行一次。
+
+  return () => {
+    // 渲染：首次渲染和每次更新都会运行。
+    return (
+      <header>
+        <p>{handle.props.artist}</p>
+        <h1>{handle.props.title}</h1>
+      </header>
+    );
+  };
+}
+```
+
+用 JSX 渲染组件，例如 `<AlbumHeading artist="..." title="..." />`。
+每次 JSX 使用都会创建自己的实例和设置作用域。
+
+渲染函数返回 `RemixNode`：包括 `<main>` 这样的宿主元素、其他 Remix 组件、
+字符串、数字、布尔值、`null`、`undefined`，以及这些值的嵌套数组。
+Fragment 让你在不增加 DOM 元素的情况下返回兄弟节点：
+
+```tsx filename=app/ui/album-byline.tsx
+import type { Handle } from "remix/component";
+
+export function AlbumByline(handle: Handle<{ artist: string; year: number }>) {
+  return () => (
+    <>
+      <span>{handle.props.artist}</span>
+      <span>{handle.props.year}</span>
+    </>
+  );
+}
+```
+
+## Props、局部状态、context 与更新
+
+每个组件都会收到一个 `Handle`，其中包含 props 与控制渲染的方法。
+
+`handle.props` 是一个稳定对象，属性值会在每次渲染前被替换，
+因此回调和渲染输出应当从它读取当前值。解构这个对象是安全的；
+但在设置阶段解构它的某个属性，只会捕获初始值。
+
+```tsx
+import type { Handle } from "remix/component";
+
+function AlbumTitle(handle: Handle<{ title: string }>) {
+  let { props } = handle;
+  let initialTitle = props.title;
+
+  return () => <h1 title={`Originally ${initialTitle}`}>{props.title}</h1>;
+}
+```
+
+局部状态就是在设置作用域中声明的普通 JavaScript。保存会影响渲染的值，
+其余一切都在渲染中推导：
+
+```tsx filename=app/ui/album-list.tsx
+import { on } from "remix/component";
+import type { Handle } from "remix/component";
+
+type Album = {
+  id: string;
+  title: string;
+  year: number;
+};
+
+export function AlbumList(handle: Handle<{ albums: Album[] }>) {
+  let filter = "";
+
+  return () => {
+    let visibleAlbums = handle.props.albums.filter((album) =>
+      album.title.toLowerCase().includes(filter.toLowerCase()),
+    );
+
+    return (
+      <div>
+        <input
+          aria-label="Filter albums"
+          mix={on("input", (event) => {
+            filter = event.currentTarget.value;
+            handle.update();
+          })}
+          type="search"
+        />
+        <ul>
+          {visibleAlbums.map((album) => (
+            <li key={album.id}>{album.title}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+}
+```
+
+输入处理器修改 `filter`，然后调用 `handle.update()` 用新值渲染。只改变量本身不会触发渲染。
+稳定的 `key` 值告诉 Remix 哪些列表项在多次渲染之间是同一个，
+因此列表重排时它们的 DOM、组件状态、焦点和已输入的值都能保留。
+
+`handle.id` 是组件实例的稳定标识符。当可复用控件需要连接 label、input、描述或 ARIA 关系，
+又不想要求传入 `id` prop 时，它很有用：
+
+```tsx
+import type { Handle } from "remix/component";
+
+function AlbumSearch(handle: Handle) {
+  return () => (
+    <div>
+      <label htmlFor={handle.id}>Search albums</label>
+      <input id={handle.id} name="query" type="search" />
+    </div>
+  );
+}
+```
+
+当后代需要一个不该出现在每个中间组件上的值时，使用组件 context。
+提供者类型就是 context 键，因此 `get()` 保持类型化：
+
+```tsx filename=app/ui/catalog.tsx
+import type { Handle, RemixNode } from "remix/component";
+
+type CatalogContext = {
+  currency: "USD" | "EUR";
+};
+
+export function Catalog(handle: Handle<{ children?: RemixNode }, CatalogContext>) {
+  handle.context.set({ currency: "USD" });
+
+  return () => handle.props.children;
+}
+
+export function AlbumPrice(handle: Handle<{ amount: number }>) {
+  let catalog = handle.context.get(Catalog);
+
+  return () => (
+    <span>
+      {catalog.currency} {handle.props.amount.toFixed(2)}
+    </span>
+  );
+}
+```
+
+调用 `handle.context.set(...)` 会保存值，但不会安排更新。对于在浏览器中变化的 context，
+应更新提供者，或共享一个 `TypedEventTarget`——它是 DOM
+[`EventTarget`](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget) 的类型化版本，
+由 `remix/component` 导出。这样只有监听变化的消费者需要更新。
+
+当提供者设置新值并更新后，消费者必须在渲染函数内读取 context 才能看到它；
+在设置阶段读取的值会停留在首次渲染时的值。
+
+## 服务端与浏览器的工作
+
+设置与渲染在组件渲染的任何地方运行，包括服务端。事件处理器以及 handle 中响应活动页面的部分，
+只会在浏览器中工作：
+
+| API                      | 服务端       | 浏览器                             |
+| ------------------------ | ------------ | ---------------------------------- |
+| 设置与渲染               | 运行         | 运行                               |
+| `on(...)` 事件处理器     | 不附加       | 事件触发时运行                     |
+| `handle.update()`        | 抛出错误     | 安排一次渲染                       |
+| `handle.queueTask(task)` | 不做任何事   | 下一次渲染到达 DOM 后运行 `task`   |
+| `handle.signal`          | 永不中止     | 组件被移除时中止                   |
+
+让设置与渲染远离 `window`、`document`、`localStorage` 等浏览器全局对象。
+把仅限浏览器的工作放进事件处理器或排队任务。组件只有在
+[仅客户端根](/docs/interactivity)中挂载，或位于[水合边界](/docs/interactivity)内时，才会在浏览器中运行。
+
+对于组件进入页面后应开始的工作（例如读取浏览器存储），从设置阶段排队一个任务：
+
+```tsx filename=app/ui/recently-viewed.tsx
+import type { Handle } from "remix/component";
+
+export function RecentlyViewed(handle: Handle) {
+  let titles: string[] | undefined;
+
+  handle.queueTask(() => {
+    let stored = localStorage.getItem("recently-viewed");
+    titles = stored ? JSON.parse(stored) : [];
+    handle.update();
+  });
+
+  return () => {
+    if (!titles) return <p>Loading recently viewed albums…</p>;
+    if (titles.length === 0) return null;
+
+    return (
+      <ul>
+        {titles.map((title) => (
+          <li key={title}>{title}</li>
+        ))}
+      </ul>
+    );
+  };
+}
+```
+
+服务端渲染加载提示。在浏览器中，排队任务在首次渲染到达 DOM 后运行，
+读取 `localStorage` 并渲染列表。
+
+排队任务也处理渲染过程中发现的工作，例如 prop 变化时加载数据，或更新后移动焦点。
+每个任务收到一个 [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)，
+组件再次渲染或被移除时它会被中止，因此请把它传给 `fetch()`，并在使用结果前检查。
+
+应当与组件同生命周期的定时器或订阅，应在 `handle.signal` 中止时停止：
+
+```tsx
+// 在设置阶段内：
+handle.queueTask(() => {
+  if (handle.signal.aborted) return;
+
+  let interval = setInterval(() => handle.update(), 1000);
+  handle.signal.addEventListener("abort", () => clearInterval(interval));
+});
+```
+
+在水合组件中，这些更新通常从[事件处理器](/docs/interactivity)开始。
+交互一章会说明更新与排队任务相对 DOM 的运行时机。
+
+## 通过请求上下文渲染页面
+
+action 通过返回带组件树的 `context.render(...)` 来渲染页面：
+
+```tsx filename=app/actions/albums/controller.tsx
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+import { getAlbum } from "./data.ts";
+import { AlbumPage } from "./show-page.tsx";
+
+export default createController(routes.albums, {
+  actions: {
+    async show(context) {
+      let album = await getAlbum(context.params.albumId);
+
+      if (album === undefined) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      return context.render(<AlbumPage album={album} />);
+    },
+  },
+});
+```
+
+`context.render(...)` 来自 `remix/middleware/render` 中的 `render()`。
+在[路由器的中间件](/docs/request-handling)中安装一次，之后每个 action 都能调用
+`context.render(...)`，无需导入渲染器。当渲染页面需要状态或头部时，它也接受 `ResponseInit`：
+
+```tsx
+return context.render(<AlbumPage album={album} />, {
+  status: 404,
+  headers: { "Cache-Control": "no-store" },
+});
+```
+
+大多数组件不需要知道中间件如何把树变成响应。中间件会[流式渲染组件树](/docs/streaming-ui-with-frames)，
+[frame](/docs/streaming-ui-with-frames)则让页面可以独立加载路由拥有的区域。
+
+## 文档外壳、head 内容与 HTML 响应
+
+把每个页面渲染在一个输出完整文档的共享组件中，放在 `app/actions/document.tsx` 这样的模块里：
+
+```tsx filename=app/actions/document.tsx
+import type { Handle, RemixNode } from "remix/component";
+import { ImportMap } from "remix/component/server";
+
+import { scriptEntry } from "../assets.ts";
+
+export interface DocumentProps {
+  children?: RemixNode;
+  head?: RemixNode;
+  title?: string;
+}
+
+export function Document(handle: Handle<DocumentProps>) {
+  return () => {
+    let { children, head, title = "Albums" } = handle.props;
+    let { href, importMap, preloads } = scriptEntry;
+
+    return (
+      <html lang="en">
+        <head>
+          <meta charSet="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+          <title>{title}</title>
+          {head}
+          <ImportMap value={importMap} />
+          {preloads.map((preloadHref) => (
+            <link key={preloadHref} rel="modulepreload" href={preloadHref} />
+          ))}
+          <script type="module" src={href}></script>
+        </head>
+        <body>{children}</body>
+      </html>
+    );
+  };
+}
+```
+
+来自 `remix/component/server` 的 `<ImportMap>` 会把脚本入口的映射与阻塞式客户端入口的映射合并，
+让初始文档包含一份完整的 [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)。
+import map 是一个 `<script type="importmap">` 标签，告诉浏览器每个裸模块说明符
+（例如 `remix/component`）该加载哪个 URL。
+
+把 `title`、`meta`、`link` 和 `style` 元素放进文档显式的 `<head>`，
+连同全局样式表、模块预加载、图标和浏览器入口脚本。在 `app/assets.ts` 中一次性解析
+[入口 href 及其模块图](/docs/files-and-assets)，不要在组件里构造资源 URL。
+
+渲染器把这棵树交给 `remix/response/html` 的 `createHtmlResponse()`。
+该辅助函数保留已有的 doctype，或前置 `<!DOCTYPE html>`；
+除非 action 已提供，否则设置 `Content-Type: text/html; charset=UTF-8`，并返回普通的 Web `Response`。
+
+## 用 css 与动态样式值编写样式
+
+静态规则使用 `css(...)`。它支持伪选择器、伪元素、后代与属性选择器，
+以及使用普通 CSS 嵌套的媒体查询。只在某个 JSX 位置使用的样式，就内联在该元素的 `mix` 中，
+解释性注释放在相关规则旁边：
+
+```tsx filename=app/ui/album-card.tsx
+import { css } from "remix/component";
+import type { Handle } from "remix/component";
+
+export function AlbumCard(handle: Handle<{ soldOut: boolean; title: string }>) {
+  return () => (
+    <article
+      mix={css({
+        border: "1px solid #d6d6d6",
+        borderRadius: "12px",
+        padding: "1rem",
+        "&:hover": {
+          borderColor: "#6d28d9",
+        },
+        "& .title": {
+          marginBlock: "0 0.25rem",
+        },
+        "@media (max-width: 40rem)": {
+          borderRadius: 0,
+        },
+      })}
+      style={{ opacity: handle.props.soldOut ? 0.55 : 1 }}
+    >
+      <h2 class="title">{handle.props.title}</h2>
+      <p>{handle.props.soldOut ? "Sold out" : "In stock"}</p>
+    </article>
+  );
+}
+```
+
+`css(...)` 调用会生成一个类与静态规则，元素的 [`mix` prop](/docs/interactivity) 应用它。
+当多个 JSX 位置共享某个样式，或变体映射能让可选值更清晰时，给样式命名。
+命名样式放在组件的模块中，出现第二次使用时再抽取。
+
+对于进度、坐标、透明度或 transform 这类每次更新都可能变化的值，`style` prop 更合适。
+把它们放进 `css(...)` 会为每个值生成一条新规则。
+
+优先使用 `"&:hover .title"` 或 `'&[aria-expanded="true"]'` 这类状态选择器，
+而不是在 JavaScript 中跟踪 hover 或 focus。浏览器无需渲染即可应用它们，并且在页面水合之前就有效。
+当同一元素上的两个 `css(...)` 样式设置同一属性时，它们在 `mix` 中的顺序并不决定谁胜出，
+因此应[把变体放在单个样式的选择器后面](/docs/rendering-ui)。
+
+每个 `css(...)` 样式还有自己的[级联层](https://developer.mozilla.org/en-US/docs/Web/CSS/@layer)，
+按页面首次插入它的顺序排列。后面的层无论选择器特异性如何都会胜出，
+而父组件的样式通常先于子组件插入。这意味着父样式中的嵌套选择器（如 `"&:hover .title"`）
+无法覆盖子组件自己样式设置的属性。请把该状态选择器放进子组件的样式里。
+
+服务端渲染期间，Remix 会收集生成的规则、去重，并把它们的 `<style data-rmx-style>` 标签插入文档 head。
+服务端渲染的页面无需等待浏览器 JavaScript 就能获得组件样式。
+
+## 级联层与应用自有的设计令牌
+
+[级联层](https://developer.mozilla.org/en-US/docs/Web/CSS/@layer)是用 `@layer` 声明的具名 CSS 规则组。
+层的顺序在比较选择器特异性之前就决定了哪条规则胜出。生成的 `css(...)` 规则位于 `rmx` 层，
+每个样式有自己的子层。如果你的应用使用自己的层，请一次性声明完整顺序：
+
+```css filename=app/actions/public/app.css
+@layer base, rmx, app;
+
+@layer base {
+  :root {
+    --color-accent: #6d28d9;
+    --space-page: clamp(1rem, 4vw, 3rem);
+  }
+
+  body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+  }
+}
+
+@layer app {
+  .album-grid {
+    display: grid;
+    gap: var(--space-page);
+  }
+}
+```
+
+`rmx` 之前的层提供可被生成样式覆盖的默认值；`rmx` 之后的层可以刻意覆盖生成样式。
+未分层的 CSS 优先级高于所有层（包括 `rmx`），因此未分层规则无论层顺序如何都会覆盖生成样式。
+
+把品牌色、间距、字体、圆角和其他设计令牌放在应用自有的 CSS 自定义属性或 TypeScript 值中。
+
+## 可选的无头 UI 原语
+
+`@remix-run/ui` 是一个独立的无头、可访问交互原语包。该包目前不稳定，独立版本化，
+不通过 `remix` 包提供。当应用需要手风琴、combobox、listbox、菜单、popover、select、
+tab 或 toggle 等控件的可复用行为时安装它：
+
+```sh
+npm i @remix-run/ui
+```
+
+从各原语的包子路径导入。例如：
+
+```tsx
+import { css } from "remix/component";
+import * as accordion from "@remix-run/ui/accordion";
+```
+
+这些原语提供结构属性、键盘交互、焦点管理与状态协调；你的应用提供标记和全部视觉样式。
+处理浏览器事件的控件还必须位于 [`clientEntry(...)` 边界](/docs/interactivity)内，
+无论是直接包裹还是通过可交互祖先。
+
+当原生元素已经覆盖所需行为时，就使用原生元素。由原语构建的自定义 select
+需要 provider、trigger、popover、list、options，以及参与表单时的隐藏 input。
+
+## 用 unsafeHTML 插入原始 HTML
+
+当组件需要插入预渲染的 HTML 时，把 `unsafeHTML(...)` 传给元素的 `innerHTML` prop：
+
+```tsx filename=app/ui/album-notes.tsx
+import { unsafeHTML } from "remix/component";
+import type { Handle } from "remix/component";
+
+export function AlbumNotes(handle: Handle<{ notesHtml: string }>) {
+  return () => <section innerHTML={unsafeHTML(handle.props.notesHtml)} />;
+}
+```
+
+`innerHTML` 和 iframe 的 `srcDoc` prop 会拒绝原始字符串，
+防止不可信的 prop 展开注入标记。`unsafeHTML(...)` 把字符串标记为已授权，但**不会**净化它，
+因此传入用户提供的 HTML 前必须先净化。存在 `innerHTML` 时，元素会忽略它的 `children`。
+
+## 不使用组件运行时渲染 HTML
+
+并非每个 HTML 响应都需要组件树。`remix/html-template` 为 feed、邮件正文、小片段等
+面向字符串的输出生成已转义的 `SafeHtml` 值：
+
+```ts filename=app/actions/albums/feed.ts
+import { html } from "remix/html-template";
+import { createHtmlResponse } from "remix/response/html";
+
+import { routes } from "../../routes.ts";
+
+export function renderAlbumFeed(albums: Array<{ id: string; title: string }>) {
+  let items = albums.map((album) => {
+    let href = routes.albums.show.href({ albumId: album.id });
+    return html`<li><a href="${href}">${album.title}</a></li>`;
+  });
+
+  return createHtmlResponse(html`
+    <html lang="en">
+      <head>
+        <title>Album feed</title>
+      </head>
+      <body>
+        <ul>
+          ${items}
+        </ul>
+      </body>
+    </html>
+  `);
+}
+```
+
+插值的字符串会被转义，嵌套的 `SafeHtml` 片段可以组合而不会被二次转义。
+`html.raw` 只用于应用已经信任的标记，绝不要传入用户输入。

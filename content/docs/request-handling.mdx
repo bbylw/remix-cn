@@ -1,0 +1,397 @@
+---
+title: 请求处理
+description: 一个 Web Request 如何穿过运行时适配器与中间件流水线，最终成为 Web Response。
+icon: ArrowLeftRight
+---
+
+本章跟随一个请求，从服务器边界一直走到处理它的[控制器 action](/docs/routing-and-controllers)。
+内容涵盖：运行时如何把 Web [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request)
+交给应用，中间件如何准备请求上下文，以及最终的 Web
+[`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) 如何回到客户端。
+
+与运行时相关的代码只存在于服务器入口。路由器、中间件和 action 在其他所有地方都遵循同一份
+Fetch API 契约。
+
+## Web Request/Response 契约
+
+Remix 路由器就是一个 fetch 处理器。它的 `fetch()` 方法接受一个 URL 或 Web `Request`，
+并解析为一个 Web `Response`：
+
+```ts
+let request = new Request("https://albums.example/albums/thriller", {
+  method: "GET",
+  headers: { Accept: "text/html" },
+});
+
+let response = await router.fetch(request);
+
+console.log(response.status); // 200
+console.log(response.headers.get("Content-Type"));
+```
+
+无论调用来自 Node 服务器、Bun 服务器、Cloudflare Worker 还是测试，这个调用都一样。
+运行时适配器不定义路由，也不知道页面如何渲染；它只在需要时把原生服务器 API
+桥接到 `Request` 与 `Response`。
+
+每次调用 `router.fetch(...)`，Remix 会：
+
+1. 从传入的 `Request` 创建请求上下文。
+2. 运行路由器中间件。
+3. 用 `context.method` 与 `context.url` 匹配已注册的路由。
+4. 为匹配的路由运行控制器中间件与 action 中间件。
+5. 调用 action 并取得它的 `Response`。
+6. 反向展开中间件链，然后用最终响应 resolve `router.fetch(...)`。
+
+如果没有路由匹配，路由器返回 `404` 响应。如果中间件或 action 抛出异常，
+`router.fetch(...)` 会 reject。服务器入口是捕获该错误并把它转成 `500` 响应的最后一道防线。
+
+请求体与响应体始终保持为 Web 流。action 可以读取 `request.body`，返回由
+[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) 支撑的
+`Response`，并通过 `request.signal`（一个在客户端离开时触发的
+[`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)）响应取消，
+全程不需要接触运行时特有的请求对象。
+
+## Node 服务器入口
+
+在 Node 上，`server.ts` 创建一个 `node:http` 服务器并把它连接到应用路由器。
+生产入口还应该[优雅关闭](/docs/production)，下面的例子为了让请求路径更清晰而省略了这一点。
+
+```ts filename=server.ts
+import * as http from "node:http";
+import { createRequestListener } from "remix/node-fetch-server";
+
+import { router } from "./app/router.ts";
+
+const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 44100;
+
+const server = http.createServer(createRequestListener(router.fetch));
+
+server.listen(port, () => {
+  console.log(`Server listening on http://localhost:${port}`);
+});
+```
+
+`server.ts` 负责 Node 相关的事务：端口、TLS、关闭信号，以及任何需要 Node 原始请求/响应对象的集成。
+`app/router.ts` 负责应用事务：中间件、路由与控制器。
+
+保持这条边界足够窄。只需要 URL、头部、Cookie、请求体或中止信号的代码，
+都可以在 `createRequestListener` 的另一侧使用 Web API。
+
+## createRequestListener
+
+`createRequestListener(...)` 把 Fetch 处理器适配成 `http.createServer(...)` 期望的回调。
+对每个 Node 请求，它会：
+
+- 根据协议、主机和传入路径构造完整请求 URL。
+- 通过 Web `Request` 暴露传入的头部与请求体。
+- 客户端断开时中止 `request.signal`。
+- 把请求交给你的 Fetch 处理器。
+- 通过 Node 写回响应的状态、头部与流式响应体。
+
+同一个监听器适用于 `node:http`、`node:https` 以及 Node 的 HTTP/2 兼容 API。
+默认情况下，`createRequestListener(...)` 会记录错误并返回通用的 `500` 响应。
+
+当服务器边界需要更多信息时，监听器接受几个选项：
+
+| 选项         | 用途                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------------- |
+| `host`       | 在构造 `request.url` 时设置固定主机。                                                    |
+| `protocol`   | 设置固定协议，例如 `"https:"`。                                                          |
+| `trustProxy` | 从受信任的 `Forwarded` 与 `X-Forwarded-*` 头部读取 URL 和客户端地址。                    |
+| `onError`    | 记录未捕获错误，并可选地返回替代默认 `500` 响应的 `Response`。                           |
+
+代理使用 [`Forwarded`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Forwarded)
+头或较旧的 `X-Forwarded-*` 头传递原始请求的协议、主机和客户端地址。
+位于受信任反向代理之后的 Node 服务器可以让监听器恢复公开的协议与主机：
+
+```ts filename=server.ts
+const requestListener = createRequestListener(router.fetch, {
+  trustProxy: true,
+  onError(error) {
+    console.error(error);
+    return new Response("Internal Server Error", { status: 500 });
+  },
+});
+
+const server = http.createServer(requestListener);
+```
+
+只有当客户端无法绕过代理直接访问应用服务器，且代理会覆盖这些头部时，才启用 `trustProxy`。
+否则客户端可以伪造应用看到的协议、主机或地址。
+
+处理器还可以接受第二个参数，包含客户端地址、地址族与端口：
+
+```ts
+const requestListener = createRequestListener((request, client) => {
+  console.log(`Request from ${client.address}:${client.port}`);
+  return router.fetch(request);
+});
+```
+
+如果现有 Node 集成需要更底层的控制，`remix/node-fetch-server` 还导出了 `createRequest(...)`
+与 `sendResponse(...)`。在你需要介入这两个操作之间之前，优先使用 `createRequestListener(...)`。
+
+## 其他运行时：Bun、Deno、Workers
+
+Bun、Deno 和边缘 Worker 运行时本身就能接受 Fetch 处理器，因此不需要 Node 适配器。
+它们的入口可以直接调用同一个路由器。
+
+Bun 在 `Bun.serve(...)` 中使用处理器：
+
+```ts filename=server.ts
+import { router } from "./app/router.ts";
+
+Bun.serve({
+  port: 44100,
+  fetch(request) {
+    return router.fetch(request);
+  },
+});
+```
+
+Deno 在 `Deno.serve(...)` 中使用处理器：
+
+```ts filename=server.ts
+import { router } from "./app/router.ts";
+
+Deno.serve({ port: 44100 }, router.fetch);
+```
+
+Cloudflare Worker 导出一个带 `fetch` 方法的对象：
+
+```ts filename=worker.ts
+import { router } from "./app/router.ts";
+
+export default {
+  fetch(request) {
+    return router.fetch(request);
+  },
+} satisfies ExportedHandler;
+```
+
+这些简写入口省略了 Node 示例中的错误记录。当运行时的默认错误响应与日志不符合需求时，
+在 `router.fetch(...)` 外面加上 `try`/`catch`。
+
+路由器的契约是可移植的，但中间件栈中的每个包未必如此。例如当前的静态文件与压缩中间件
+使用 Node 的文件系统与压缩 API。在 Worker 上，应通过平台提供静态资源，并使用平台的响应压缩。
+
+## 中间件顺序
+
+中间件包裹 `router.fetch(...)` 处理的每个请求。给定两个中间件函数，
+请求从左到右运行，响应从右到左展开：
+
+```txt
+request  → first → second → action
+response ← first ← second ← action
+```
+
+这个顺序来自 `next()`：
+
+```ts
+import type { Middleware } from "remix/router";
+
+function timing(): Middleware {
+  return async (context, next) => {
+    let start = performance.now();
+    let response = await next();
+    let duration = performance.now() - start;
+
+    console.log(`${context.method} ${context.url.pathname} ${duration.toFixed(1)}ms`);
+    return response;
+  };
+}
+```
+
+`await next()` 之前的代码在请求进入时运行，之后的代码在响应返回时运行，
+可以检查或替换下游响应。不调用 `next()` 而直接返回 `Response` 会终止链条，
+静态文件、[CORS 预检](https://developer.mozilla.org/en-US/docs/Glossary/Preflight_request)、
+授权检查与缓存都靠这一点提前响应。
+
+Remix 有三种中间件作用域：
+
+1. **路由器中间件**：在路由匹配前运行，作用于传给路由器的每个请求。
+2. **控制器中间件**：作用于该控制器拥有的直接 action。
+3. **Action 中间件**：作用于单个 action。
+
+完整顺序是：路由器中间件 → 控制器中间件 → action 中间件 → action 处理器。
+控制器与 action 中间件只在路由匹配后运行。控制器中间件不会流入为
+[嵌套路由映射映射的控制器](/docs/routing-and-controllers)。
+
+按依赖关系与包裹行为选择中间件顺序：
+
+- 把提供者放在消费者之前，例如 `formData()` 在 `methodOverride()` 之前。
+- 把响应包装器放在它应转换的提前响应之前，例如 `compression()` 在 `staticFiles()` 之前。
+- 把快速路径不需要的工作放在快速路径之后，例如渲染准备放在静态文件之后。
+
+同样的规则适用于会话、[CSRF 防护](/docs/auth-sessions-security)与认证。
+在中间件读取会话之前加载会话，在校验表单令牌之前解析表单数据，在要求已认证用户之前解析身份。
+
+## 类型化请求上下文
+
+一次 `router.fetch(...)` 调用中的每个中间件与 action 都收到同一个请求上下文对象。
+它一开始包含原始 `request`、解析后的 `url`、可变的 `Headers` 副本、生效的 `method`、
+匹配到的 `params`，以及当前 `router`。中间件可以用 `context.set(key, value)` 添加请求作用域的值，
+下游代码用 `context.get(key)` 读取。
+
+内置中间件会在 TypeScript 类型中携带它的上下文变更。例如 `formData()` 提供 `context.formData`，
+`render()` 提供类型化的 `context.render(...)` 函数。
+
+在 `app/router.ts` 中，从配置好的路由器推导应用上下文，并用
+[模块增强](https://www.typescriptlang.org/docs/handbook/declaration-merging.html#module-augmentation)
+让该上下文成为控制器的默认类型。模块增强是一个 TypeScript `declare module` 块，
+它为另一个包导出的接口添加字段，这里是 `remix` 导出的 `RouterTypes` 接口：
+
+```ts filename=app/router.ts
+import { formData } from "remix/middleware/form-data";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+import { createRouter, type RouterContext } from "remix/router";
+
+import controller from "./actions/controller.tsx";
+import albumsController from "./actions/albums/controller.tsx";
+import albumsEditController from "./actions/albums/edit/controller.tsx";
+import { assets } from "./assets.ts";
+import { routes } from "./routes.ts";
+
+export const router = createRouter({
+  middleware: [staticFiles("./public", { index: false }), formData(), render({ assets })],
+});
+
+export type AppContext = RouterContext<typeof router>;
+
+declare module "remix" {
+  interface RouterTypes {
+    context: AppContext;
+  }
+}
+
+router.map(routes, controller);
+router.map(routes.albums, albumsController);
+router.map(routes.albums.edit, albumsEditController);
+```
+
+`RouterContext<typeof router>` 按顺序跟随内联中间件元组。在任何映射到该路由器的控制器中，
+TypeScript 都知道 `context.formData` 和 `context.render` 存在：
+
+```tsx filename=app/actions/albums/edit/controller.tsx
+// 在 actions 对象内：
+action(context) {
+  let title = context.formData.get("title");
+
+  return context.render(<p>Submitted {String(title)}</p>);
+},
+```
+
+模块增强很有用，因为控制器在被映射到路由器之前就已经在独立文件中创建。
+拥有多个路由器的应用应显式传入上下文类型，而不是设置应用级默认值。
+
+当可复用的中间件链需要存入变量时，`createMiddleware(...)` 会保留它的元组类型，
+`MiddlewareContext<typeof middleware>` 推导出结果上下文。内联中间件数组加
+`RouterContext<typeof router>` 是更简单的默认选择。
+
+请求上下文仍然是显式的每请求值，而不是全局变量。如果中间件或 action 之外的辅助函数
+必须访问它，可以添加 `remix/middleware/async-context` 的 `asyncContext()`，
+并在该辅助函数内调用 `getContext()`。这个中间件使用 Node 的
+[`AsyncLocalStorage`](https://nodejs.org/api/async_context.html)，
+因此把需要的值作为函数参数传递仍是可移植的选择。
+
+## 常用中间件：form-data、render、静态文件、压缩、日志
+
+服务端渲染应用通常至少需要静态文件与渲染中间件。当请求路径需要时再加入其他中间件：
+
+| 中间件          | 导入                                        | 作用                                                                                       | 放置位置                                               |
+| --------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `formData()`    | `remix/middleware/form-data`                | 解析一次 URL 编码与 multipart 请求体，提供 `context.formData`；非表单请求得到空 `FormData`。 | 在 CSRF 表单字段检查或读取表单数据的 action 之前。      |
+| `render()`      | `remix/middleware/render`                   | 安装标准的 Remix 组件 `context.render(...)` 函数。                                          | 在可能不渲染就响应的中间件之后。                       |
+| `staticFiles()` | `remix/middleware/static`                   | 从目录提供 `GET` 与 `HEAD` 请求，支持条件请求与范围请求。                                   | 尽早，在静态文件不需要的请求增强之前。                 |
+| `compression()` | `remix/middleware/compression`              | 为合适的下游响应协商 Brotli、gzip 或 deflate。                                              | 在它应包裹的每个响应之前，包括 `staticFiles()`。        |
+| `logger()`      | `remix/middleware/logger`                   | 记录请求与下游响应，并提供 `context.logger(...)`。                                          | 通常放最前，这样提前响应与 `404` 也会被记录。          |
+
+一个接受 HTML 表单的服务端渲染应用可能同时使用全部五个：
+
+```ts filename=app/router.ts
+import { compression } from "remix/middleware/compression";
+import { formData } from "remix/middleware/form-data";
+import { logger } from "remix/middleware/logger";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+import { createRouter } from "remix/router";
+
+import { assets } from "./assets.ts";
+
+export const router = createRouter({
+  middleware: [
+    logger(),
+    compression(),
+    staticFiles("./public", { index: false }),
+    formData(),
+    render({ assets }),
+  ],
+});
+```
+
+当大多数路由都要用时，全局中间件很方便。如果只有一个 action 接受表单或上传，
+把 `formData()` 放到那个 action 上，其他请求就能跳过请求体解析。
+
+`staticFiles()` 原样提供根 `public/` 目录下的文件。由 `remix/assets` 编译的浏览器源码
+位于 `app/` 下同目录的 `public/` 中，走一条独立的[源码资源管线](/docs/files-and-assets)。
+
+`remix/middleware/render` 中的 `render()` 让 action 可以用 `context.render(...)`
+[渲染组件页面](/docs/rendering-ui)，底层是[流式渲染器](/docs/streaming-ui-with-frames)。
+
+## 自定义中间件
+
+自定义中间件是一个接收 `(context, next)` 并返回 `Response` 或 `next()` 结果的函数。
+当它提供请求作用域的值时，用 `createContextKey<T>()` 创建上下文键。
+这个键就是 `context.set(key, value)` 与 `context.get(key)` 存取该值时使用的类型化句柄。
+
+下面的中间件在 action 运行前分配请求 ID，然后在响应返回时把同一个 ID 加进去：
+
+```ts filename=app/middleware/request-id.ts
+import { createContextKey, type Middleware } from "remix/router";
+
+export const RequestId = createContextKey<string>();
+
+export function requestId(): Middleware<{
+  key: typeof RequestId;
+  value: string;
+}> {
+  return async (context, next) => {
+    let id = crypto.randomUUID();
+    context.set(RequestId, id);
+
+    let response = await next();
+    let headers = new Headers(response.headers);
+    headers.set("X-Request-Id", id);
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+}
+```
+
+`Middleware<{ key, value }>` 类型记录了中间件添加的内容。一旦 `requestId()` 成为类型化路由器栈的一部分，
+下游控制器读取 `context.get(RequestId)` 时得到 `string`，而不是 `string | undefined`。
+
+拒绝请求的中间件不调用 `next()`，直接返回响应：
+
+```ts
+function requireJson(): Middleware {
+  return (context, next) => {
+    let mediaType = context.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+
+    if (mediaType !== "application/json") {
+      return new Response("Expected JSON", { status: 415 });
+    }
+
+    return next();
+  };
+}
+```
+
+让自定义中间件只关注一个请求生命周期问题。路由特有的数据加载或校验通常属于 action，
+而被许多路由共享的行为适合放在中间件流水线中。请求 ID、会话、认证、安全头与数据库访问
+都是常见的例子。

@@ -1,0 +1,363 @@
+---
+title: 动画
+description: CSS 优先的动画模型，以及尊重渲染状态的 Remix 组件动效辅助函数。
+icon: Sparkles
+---
+
+Remix 应用中的动效从 CSS 开始。`remix/component` 中 `css(...)` 的样式处理 hover、focus
+等浏览器拥有的状态。当动效取决于组件渲染的内容（例如节点进入、离开或在带 key 的列表中移动）时，
+由 `@remix-run/ui/animation` 中的 mixin 与时间辅助函数接管。
+
+`@remix-run/ui` 目前不稳定且独立版本化，不通过 `remix` 包提供，因此需要单独安装：
+
+```sh
+npm i remix @remix-run/ui
+```
+
+## CSS 优先的视觉状态
+
+当浏览器已经拥有状态时，从 CSS 开始。Hover、focus、active、checked、open、selected
+以及减少动效状态都不需要 JavaScript 状态，除非你的渲染输出也依赖它们。
+
+```tsx filename=app/ui/pressable-card.tsx
+import { css } from "remix/component";
+import type { Handle, RemixNode } from "remix/component";
+
+export function PressableCard(handle: Handle<{ children: RemixNode }>) {
+  return () => (
+    <button
+      mix={css({
+        border: "1px solid #d6d6d6",
+        borderRadius: "16px",
+        background: "white",
+        cursor: "pointer",
+        font: "inherit",
+        padding: "1rem",
+        transition: "transform 160ms ease, box-shadow 160ms ease",
+        "&:hover, &:focus-visible": {
+          boxShadow: "0 12px 32px rgba(15, 17, 21, 0.14)",
+          transform: "translateY(-2px)",
+        },
+        "&:active": {
+          transform: "translateY(0)",
+        },
+        "@media (prefers-reduced-motion: reduce)": {
+          transition: "none",
+        },
+      })}
+      type="button"
+    >
+      {handle.props.children}
+    </button>
+  );
+}
+```
+
+当动效取决于渲染状态时（节点进入、节点退出、带 key 的条目移动，
+或需要可中断动画的事件），才使用 `@remix-run/ui/animation` 的辅助函数。
+
+## 进入与退出动画
+
+这些 mixin 附加到宿主节点——组件渲染的 `<p>`、`<li>` 等 DOM 元素——而不是组件本身。
+`animateEntrance(...)` 在宿主节点插入时运行；`animateExit(...)` 让被移除的节点留在 DOM 中，
+直到退出动画完成。
+
+```tsx filename=app/ui/public/notice.tsx
+import { clientEntry, css, on } from "remix/component";
+import { animateEntrance, animateExit, spring } from "@remix-run/ui/animation";
+import type { Handle } from "remix/component";
+
+export const Notice = clientEntry(import.meta.url, function Notice(handle: Handle) {
+  let visible = true;
+
+  return () => (
+    <div>
+      <button
+        mix={[
+          on("click", () => {
+            visible = !visible;
+            handle.update();
+          }),
+        ]}
+        type="button"
+      >
+        Toggle notice
+      </button>
+      {visible && (
+        <p
+          key="notice"
+          mix={[
+            animateEntrance({
+              opacity: 0,
+              transform: "translateY(8px)",
+              ...spring("snappy"),
+            }),
+            animateExit({
+              opacity: 0,
+              transform: "translateY(-8px)",
+              ...spring("snappy"),
+            }),
+            css({
+              borderRadius: "12px",
+              background: "#ecfdf5",
+              color: "#065f46",
+              padding: "0.75rem 1rem",
+            }),
+          ]}
+        >
+          Settings saved.
+        </p>
+      )}
+    </div>
+  );
+});
+```
+
+在相关元素之间切换时保持 key 稳定。稳定的 key 告诉 Remix 哪个节点正在进入、退出或被替换。
+
+传入 `true` 使用默认透明度动画，传入 `false` 可在不改变周围 `mix` 数组的情况下禁用某个 mixin。
+`animateEntrance({ initial: false })` 跳过某个 key 的首次插入，但仍会为后续插入播放动画。
+如果同一个带 key 的元素在退出完成前重新出现，Remix 会收回该 DOM 节点，并把它朝渲染样式动画回去。
+
+## 布局动画
+
+`animateLayout(...)` 在一次渲染前后测量宿主节点，然后对视觉差值播放动画。
+它适用于排序列表、展开卡片以及因布局变化而移动的元素。
+
+```tsx filename=app/ui/public/reorder-list.tsx
+import { clientEntry, css, on } from "remix/component";
+import { animateLayout, spring } from "@remix-run/ui/animation";
+import type { Handle } from "remix/component";
+
+const initialItems = ["Design", "Build", "Review"];
+
+export const ReorderList = clientEntry(import.meta.url, function ReorderList(handle: Handle) {
+  let items = initialItems;
+
+  return () => (
+    <div>
+      <button
+        mix={[
+          on("click", () => {
+            items = [...items].reverse();
+            handle.update();
+          }),
+        ]}
+        type="button"
+      >
+        Reverse
+      </button>
+      <ul
+        mix={css({
+          display: "grid",
+          gap: "0.5rem",
+          listStyle: "none",
+          padding: 0,
+        })}
+      >
+        {items.map((item) => (
+          <li
+            key={item}
+            mix={[
+              animateLayout({ ...spring("bouncy") }),
+              css({
+                border: "1px solid #d6d6d6",
+                borderRadius: "10px",
+                padding: "0.7rem 1rem",
+              }),
+            ]}
+          >
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+});
+```
+
+在列表中做布局动画时，`key` 不是可选项。没有稳定 key，运行时无法知道是某个条目移动了，
+还是另一个条目替换了它。
+
+布局动画默认包含尺寸投影：通过 transform 缩放元素来动画尺寸变化。
+当只应动画位置，而缩放元素内容会显得奇怪时，传入 `size: false`。
+
+## 弹簧、补间与缓动
+
+`spring()` 返回一个为 CSS transition 和 [Web Animations API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Animations_API)
+（WAAPI，即 `element.animate()` 背后的浏览器 API）装饰的迭代器。
+你可以把它字符串化进 CSS、展开进动画选项，或迭代它做自定义 JavaScript 动画。
+
+```tsx filename=app/ui/public/bouncy-switch.tsx
+import { clientEntry, css, on } from "remix/component";
+import { spring } from "@remix-run/ui/animation";
+import type { Handle } from "remix/component";
+
+export const BouncySwitch = clientEntry(import.meta.url, function BouncySwitch(handle: Handle) {
+  let enabled = true;
+
+  return () => (
+    <button
+      aria-pressed={enabled}
+      mix={[
+        on("click", () => {
+          enabled = !enabled;
+          handle.update();
+        }),
+        css({
+          border: 0,
+          borderRadius: "999px",
+          background: "#ff6b35",
+          cursor: "pointer",
+          padding: "0.25rem",
+          width: "5rem",
+        }),
+      ]}
+      type="button"
+    >
+      <span
+        mix={css({
+          display: "block",
+          width: "2rem",
+          height: "2rem",
+          borderRadius: "50%",
+          background: "white",
+          transition: spring.transition("transform", "bouncy"),
+        })}
+        style={{
+          transform: enabled ? "translateX(2.25rem)" : "translateX(0)",
+        }}
+      />
+    </button>
+  );
+});
+```
+
+当你需要基于时间的值循环，而不是 CSS 或 WAAPI 计时时，使用 `tween(...)`：
+
+```ts filename=app/ui/public/count-up.ts
+import { easings, tween } from "@remix-run/ui/animation";
+
+export function countUp(from: number, to: number, onValue: (value: number) => void) {
+  let animation = tween({ from, to, duration: 300, curve: easings.easeOut });
+  animation.next();
+
+  function tick(timestamp: number) {
+    let result = animation.next(timestamp);
+    onValue(result.value);
+
+    if (!result.done) {
+      requestAnimationFrame(tick);
+    }
+  }
+
+  requestAnimationFrame(tick);
+}
+```
+
+普通 UI 优先使用 CSS transition 和动画 mixin。`tween` 用于 canvas、自定义计数器，
+或不是 CSS 属性的值。
+
+当动画接管手势时，传入 `velocity` 延续动量。弹簧进度从 0 到 1，
+因此 `velocity` 的单位是“每秒进度”。把朝目标方向的手势速度（像素/秒）除以剩余距离（像素）。
+正值起步更快、过冲更多；负值起步更慢，值很大时会先远离目标：
+
+```ts
+// 拖拽释放后，speed 是朝目标方向的像素/秒
+let velocity = releaseSpeed / distanceToTarget;
+card.style.transition = `transform ${spring("bouncy", { velocity })}`;
+card.style.transform = "translateX(0)";
+```
+
+## 可中断的交互
+
+事件处理器收到一个 [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)，
+同一事件再次触发或元素被移除时它会中止；动画 mixin 在 DOM 再次变化时会取消或替换进行中的工作。
+如果用户快速切换通知两次，通知会从退出动画当前到达的位置朝渲染样式动画回去，
+而不是先完成退出。
+
+对于自定义命令式动画，把当前动画保存在[设置作用域](/docs/rendering-ui)，并在开始下一个前取消它：
+
+```tsx filename=app/ui/public/ripple-button.tsx
+import { clientEntry, css, on, ref } from "remix/component";
+import { spring } from "@remix-run/ui/animation";
+import type { Handle } from "remix/component";
+
+export const RippleButton = clientEntry(import.meta.url, function RippleButton(_handle: Handle) {
+  let node: HTMLButtonElement;
+  let currentAnimation: Animation | undefined;
+
+  return () => (
+    <button
+      mix={[
+        ref((element) => (node = element)),
+        on("pointerdown", () => {
+          currentAnimation?.cancel();
+          currentAnimation = node.animate(
+            [{ transform: "scale(0.96)" }, { transform: "scale(1)" }],
+            { ...spring("snappy") },
+          );
+        }),
+        css({
+          border: 0,
+          borderRadius: "999px",
+          background: "#9911ff",
+          color: "white",
+          cursor: "pointer",
+          font: "inherit",
+          fontWeight: "700",
+          padding: "0.8rem 1.1rem",
+        }),
+      ]}
+      type="button"
+    >
+      Press me
+    </button>
+  );
+});
+```
+
+CSS transition 也可以中断。transition 运行时改变目标值，浏览器会从当前视觉状态动画到新值。
+
+## 减少动效行为
+
+[`prefers-reduced-motion`](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion)
+媒体查询报告用户是否要求操作系统减少动效。先在 CSS 边界尊重它：
+它在 JavaScript 加载前就生效，适用于服务端渲染的 frame，也覆盖静态 transition。
+
+```tsx filename=app/ui/motion-safe-panel.tsx
+import { css } from "remix/component";
+import type { Handle, RemixNode } from "remix/component";
+
+export function MotionSafePanel(handle: Handle<{ children: RemixNode }>) {
+  return () => (
+    <section
+      mix={css({
+        opacity: 1,
+        transform: "translateY(0)",
+        transition: "opacity 180ms ease, transform 180ms ease",
+        "@media (prefers-reduced-motion: reduce)": {
+          transition: "none",
+          transform: "none",
+        },
+      })}
+    >
+      {handle.props.children}
+    </section>
+  );
+}
+```
+
+对于 JavaScript 驱动的动效，在开始工作前检查同一个媒体查询：
+
+```ts filename=app/ui/public/motion.ts
+export function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+```
+
+`@remix-run/ui/animation` 导出了同样的检查 `prefersReducedMotion()`。
+当 `matchMedia` 不可用时它返回 `false`，因此在服务端渲染期间调用是安全的。
+
+减少动效不一定意味着没有反馈。当移动不是必需时，优先使用更短的淡入淡出、
+即时的布局变化或非动效的状态变化。

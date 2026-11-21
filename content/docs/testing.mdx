@@ -1,0 +1,488 @@
+---
+title: 测试
+description: 如何选择测试边界，并测试 Remix 路由、有状态请求流程、浏览器组件与端到端行为。
+icon: FlaskConical
+---
+
+Remix 包含 `remix/test`，它的三种 runner 类型（`server`、`browser`、`e2e`）决定测试如何运行、
+在哪里运行，但不决定测试覆盖多少应用代码。`remix/assert` 在三种环境中都提供断言。
+
+Remix 应用已经在 `app/router.ts` 暴露了主要测试边界。路由器接受 Web `Request` 并返回
+Web `Response`，因此大多数请求行为无需启动服务器或打开浏览器就能测试。
+
+本章从这个边界开始，向外扩展到浏览器组件测试与完整端到端流程。
+
+## 选择最窄的有用测试
+
+选择包含你想证明行为的最小边界：
+
+| 测试边界         | 用于                                                     | 如何测试                                                                       | Runner 类型 |
+| ---------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------- |
+| 单元测试         | 数据辅助函数、模式、工具或其他隔离模块                   | 导入、调用并断言结果                                                           | `server`    |
+| 路由器测试       | action、响应、中间件、会话或数据库支撑的请求             | 通过 `router.fetch(...)` 发送请求                                              | `server`    |
+| 浏览器组件测试   | 组件事件、DOM 更新或浏览器 API                           | 用 `remix/component/test` 的 `render()` 渲染组件                               | `browser`   |
+| 端到端测试       | 导航或完整的浏览器/服务器流程                            | 在测试服务器后运行路由器，用 Playwright 驱动                                   | `e2e`       |
+
+返回错误状态的控制器属于路由器测试；没有进入 pending 状态的提交按钮属于浏览器组件测试。
+当浏览器与服务器行为必须一起工作时（例如提交表单并跟随重定向到更新后的页面），使用端到端测试。
+
+## 用 remix test 运行测试
+
+在 `package.json` 添加测试脚本：
+
+```json filename=package.json
+{
+  "scripts": {
+    "test": "remix test"
+  }
+}
+```
+
+然后运行：
+
+```sh
+npm test
+```
+
+默认情况下，runner 把每种类型映射到文件模式与执行模型：
+
+| Runner 类型 | 文件模式                     | 执行模型                              |
+| ----------- | ---------------------------- | ------------------------------------- |
+| `server`    | `**/*.test.{ts,tsx}`         | 服务端测试 worker                     |
+| `browser`   | `**/*.test.browser.{ts,tsx}` | 通过 Playwright 的隔离浏览器 frame    |
+| `e2e`       | `**/*.test.e2e.{ts,tsx}`     | 驱动 Playwright 浏览器的测试 worker   |
+
+`server` 类型同时覆盖单元测试与路由器测试，它描述的是执行模型，不是测试边界。
+
+三者都使用 `remix/test` 相同的 `describe(...)` 与 `it(...)` API，它还提供生命周期钩子、
+测试上下文、mock、假定时器与 runner 配置。断言函数与 `expect(...)` 匹配器来自 `remix/assert`，
+在每个测试环境都可用。为 Node 内置 runner 编写的测试几乎无需修改即可移植：
+`describe`、`it`、钩子与 `t.mock` API 遵循 [`node:test`](https://nodejs.org/api/test.html) 的形状，
+`remix/assert` 是 `node:assert/strict` 的兼容子集。
+
+每个 `it(...)` 回调的第一个参数是测试上下文（通常命名为 `t`）。它保存每测试辅助工具，
+例如用于 spy 的 `t.mock`、用于清理的 `t.after(...)`、用于端到端测试的 `t.serve(...)`，
+并在测试结束时撤销其效果。不需要它们的测试可以省略该参数：
+
+```ts filename=app/actions/albums/data.test.ts
+import * as assert from "remix/assert";
+import { describe, it } from "remix/test";
+
+import { getAlbum } from "./data.ts";
+
+describe("getAlbum", () => {
+  it("finds an album by id", async () => {
+    let album = await getAlbum("thriller");
+
+    assert.equal(album?.title, "Thriller");
+  });
+});
+```
+
+普通模块的测试放在模块旁边。路由行为属于控制器旁边，多个测试共享的辅助函数放在 `test/` 下：
+
+```txt
+app/
+└── actions/
+    └── albums/
+        ├── controller.tsx
+        ├── controller.test.ts
+        └── edit/
+            ├── controller.tsx
+            └── controller.test.ts
+test/
+└── utils.ts                   # 多个测试共享的辅助函数
+```
+
+## 用 router.fetch 测试路由
+
+路由器测试发送与生产运行时适配器相同的 `Request`。路由器、控制器与 action 中间件正常运行，
+测试收到最终 `Response`。应用测试只需要这个 Fetch 边界，不需要 `remix/router` 的其余 API。
+
+这个测试不打开网络套接字就请求专辑页面：
+
+```ts filename=app/actions/albums/controller.test.ts
+import * as assert from "remix/assert";
+import { describe, it } from "remix/test";
+
+import { router } from "../../router.ts";
+import { routes } from "../../routes.ts";
+
+const origin = "https://albums.test";
+
+describe("album show", () => {
+  it("renders the requested album", async () => {
+    let request = new Request(new URL(routes.albums.show.href({ albumId: "thriller" }), origin));
+    let response = await router.fetch(request);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "text/html; charset=UTF-8");
+    assert.match(await response.text(), /Thriller/);
+  });
+});
+```
+
+用链接、表单和重定向相同的 `routes.<name>.href(...)` 构建测试 URL。
+测试保持路由名与参数对照应用路由映射检查，而 origin 提供 `Request` 需要的绝对 URL。
+
+变更测试用 Web API 构造请求体。对于读取 `FormData` 并在成功时重定向的编辑 action，
+构建表单并断言重定向：
+
+```ts filename=app/actions/albums/edit/controller.test.ts
+import * as assert from "remix/assert";
+import { describe, it } from "remix/test";
+
+import { router } from "../../../router.ts";
+import { routes } from "../../../routes.ts";
+
+const origin = "https://albums.test";
+
+describe("album editing", () => {
+  it("redirects to the album after an update", async () => {
+    let albumId = "thriller";
+    let formData = new FormData();
+    formData.set("title", "Thriller");
+    formData.set("artist", "Michael Jackson");
+    formData.set("year", "1982");
+
+    let response = await router.fetch(
+      new Request(new URL(routes.albums.edit.action.href({ albumId }), origin), {
+        method: "POST",
+        body: formData,
+      }),
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(response.headers.get("Location"), routes.albums.show.href({ albumId }));
+  });
+});
+```
+
+同一个 `FormData` 可以携带上传：
+
+```ts
+let formData = new FormData();
+formData.set("cover", new File(["fake image bytes"], "cover.jpg", { type: "image/jpeg" }));
+```
+
+把该表单直接作为请求体。不要自己设置 `Content-Type`，因为 `Request` 在序列化 `FormData`
+时会添加 multipart 边界。
+
+中间件不需要单独的应用测试装置。通过路由器发送请求并断言中间件的可观察结果，
+例如拒绝状态、响应头、持久化的会话值或 action 使用的上下文值。
+可复用的中间件包可以使用带一个测试路由的小型路由器，但应用中间件通常应与应用控制器运行在同一栈中。
+
+## 隔离有状态的应用测试
+
+路由器本身是请求驱动的，但它中间件提供的值可能是有状态的。
+会话、数据库、上传存储、缓存与模块级数组都可能把变化泄漏到下一个测试。
+
+当 `app/router.ts` 除了生产 `router` 还导出 `createAppRouter(options)` 工厂时，
+有状态测试更容易。测试得到与生产相同的中间件和控制器映射，只替换会话存储等基础设施。
+测试辅助函数可以从 `remix/session-storage/memory` 传入内存会话存储：
+
+```ts filename=test/router.ts
+import { createCookie } from "remix/cookie";
+import { createMemorySessionStorage } from "remix/session-storage/memory";
+
+import { createAppRouter } from "../app/router.ts";
+
+export function createTestRouter() {
+  return createAppRouter({
+    sessionCookie: createCookie("session", {
+      secrets: ["test-secret"],
+    }),
+    sessionStorage: createMemorySessionStorage(),
+  });
+}
+```
+
+当测试会修改会话或中间件状态时，在测试内创建新的测试路由器。依赖只读或在测试之间重置时，
+测试套件可以共享一个。
+
+浏览器在[端到端测试](#test-complete-flows-end-to-end)中自动管理 Cookie。
+要在路由器测试中保持多请求会话流程，从一个响应读取 Cookie，并在下一个请求中发送其名称/值对：
+
+```ts filename=test/http.ts
+import * as assert from "remix/assert";
+
+export function getResponseCookie(response: Response, name: string): string {
+  let setCookie = response.headers.getSetCookie().find((header) => header.startsWith(`${name}=`));
+
+  assert.ok(setCookie, `Expected a ${name} cookie`);
+  return setCookie.split(";", 1)[0];
+}
+```
+
+```ts
+// 在多请求测试内：
+let cookie = getResponseCookie(loginResponse, "session");
+let accountResponse = await router.fetch(
+  new Request(accountUrl, {
+    headers: { Cookie: cookie },
+  }),
+);
+```
+
+数据库状态需要同样的边界。对于 SQLite，创建由 `:memory:` 支撑的数据库、应用应用迁移，
+并只种子测试需要的记录。PostgreSQL 与 MySQL 测试应使用专用测试数据库或模式，并在测试之间重置变更行。
+不要把测试指向开发或生产数据。
+
+对于上传测试，`remix/file-storage/memory` 提供 `createMemoryFileStorage()`。
+新的临时目录也可以。当 fixture 打开数据库连接、启动服务器或创建超出请求生命周期的文件时，
+用 `t.after(...)` 注册清理。
+
+当测试需要函数 spy 或方法覆盖时，在测试上下文使用 `t.mock.fn(...)` 或
+`t.mock.method(object, "methodName", impl)`。通过 `t.mock` 创建的方法 spy 在测试结束时自动恢复，
+或用 `spy.mock.restore?.()` 提前恢复。
+
+## 在浏览器中测试 Remix 组件
+
+当行为依赖事件、DOM 属性或组件更新时，使用浏览器组件测试。这些测试在隔离浏览器 frame 中运行，
+而不是模拟 DOM。
+
+浏览器与端到端测试需要 [Playwright](https://playwright.dev/)——一个启动并控制 Chromium、Firefox
+等真实浏览器的库——以及它的浏览器二进制：
+
+```sh
+npm i -D playwright
+npx playwright install
+```
+
+看一个跟踪专辑是否被收藏的小型客户端组件：
+
+```tsx filename=app/actions/albums/public/favorite-button.tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const FavoriteButton = clientEntry(
+  import.meta.url,
+  function FavoriteButton(handle: Handle<{ albumTitle: string }>) {
+    let favorite = false;
+
+    return () => (
+      <button
+        aria-pressed={favorite}
+        mix={[
+          on("click", () => {
+            favorite = !favorite;
+            handle.update();
+          }),
+        ]}
+        type="button"
+      >
+        {favorite
+          ? `Remove ${handle.props.albumTitle} from favorites`
+          : `Add ${handle.props.albumTitle} to favorites`}
+      </button>
+    );
+  },
+);
+```
+
+`remix/component/test` 的 `render(...)` 挂载组件、flush 初始渲染，
+并返回查询与交互 DOM 的辅助工具：
+
+```tsx filename=app/actions/albums/favorite-button.test.browser.tsx
+import * as assert from "remix/assert";
+import { describe, it } from "remix/test";
+import { render } from "remix/component/test";
+
+import { FavoriteButton } from "./public/favorite-button.tsx";
+
+describe("FavoriteButton", () => {
+  it("toggles an album as a favorite", async (t) => {
+    let { $, act, cleanup } = render(<FavoriteButton albumTitle="Thriller" />);
+    t.after(cleanup);
+
+    let button = $("button");
+    assert.ok(button instanceof HTMLButtonElement);
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    assert.equal(button.textContent, "Add Thriller to favorites");
+
+    await act(() => button.click());
+
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(button.textContent, "Remove Thriller from favorites");
+  });
+});
+```
+
+在可能调用 `handle.update()` 或完成异步组件工作的交互周围使用 `act(...)`。
+它会在下一个断言前 flush 待处理更新。用 `t.after(...)` 注册 `cleanup`，
+即使断言失败也会销毁组件。
+
+这个按钮没有请求行为需要证明，因此测试停留在浏览器组件边界。
+
+## 端到端测试完整流程
+
+端到端测试在真实本地 HTTP 服务器后运行路由器，并通过 Playwright
+[`Page`](https://playwright.dev/docs/api/class-page)（表示一个可导航、查找元素、点击或输入的浏览器标签页）
+驱动应用。对于导航、浏览器行为、服务端渲染与持久化必须协同工作的一小部分流程，使用这个边界。
+
+`remix/node-fetch-server/test` 的 `createTestServer(...)` 把路由器适配到可用本地端口上的服务器。
+`t.serve(...)` 把该服务器作为 Playwright 页面的 base URL，并在测试后关闭两者。
+这个例子使用 [`createTestRouter()` 辅助函数](#isolate-stateful-app-tests)，让编辑不触碰共享状态：
+
+```ts filename=app/app.test.e2e.ts
+import * as assert from "remix/assert";
+import { createTestServer } from "remix/node-fetch-server/test";
+import { describe, it } from "remix/test";
+
+import { routes } from "./routes.ts";
+import { createTestRouter } from "../test/router.ts";
+
+describe("album editing", () => {
+  it("updates an album from the edit page", async (t) => {
+    let router = createTestRouter();
+    let page = await t.serve(await createTestServer(router.fetch));
+    let albumId = "thriller";
+
+    await page.goto(routes.albums.edit.index.href({ albumId }));
+    await page.getByLabel("Year").fill("1982");
+    await page.getByRole("button", { name: "Save album" }).click();
+    await page.getByRole("heading", { name: "Thriller" }).waitFor();
+
+    assert.equal(new URL(page.url()).pathname, routes.albums.show.href({ albumId }));
+    await page.getByText("Michael Jackson · 1982").waitFor();
+  });
+});
+```
+
+路由器与浏览器会自动清理。在 `t.serve(...)` 之外创建的数据库或文件存储 fixture 仍需要自己的清理。
+
+把校验状态、重定向与中间件分支留在路由器测试中。一个有代表性的端到端流程可以证明表单、
+pending 状态、POST、重定向与渲染结果协同工作，而无需在 Playwright 中重复每个服务端用例。
+
+### SPA 的端到端测试
+
+仅客户端 SPA（包括[在浏览器中运行路由器](/docs/streaming-ui-with-frames)的应用）
+没有可供 `createTestServer(...)` 包装的服务端路由器。改为给 `t.serve(...)` 传入你自己的服务器对象，
+带 `baseUrl` 与异步 `close()` 方法。这个例子构建应用并用 Vite 预览服务器提供它：
+
+```ts filename=app/app.test.e2e.ts
+import { fileURLToPath } from "node:url";
+import * as assert from "remix/assert";
+import { beforeAll, describe, it } from "remix/test";
+import { build, preview } from "vite";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+
+async function createSpaTestServer() {
+  let vite = await preview({
+    root,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let address = vite.httpServer?.address();
+
+  if (address == null || typeof address === "string") {
+    await vite.close();
+    throw new Error("Vite did not bind to a TCP port");
+  }
+
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    async close() {
+      await vite.close();
+    },
+  };
+}
+
+describe("SPA navigation", () => {
+  beforeAll(async () => {
+    await build({ root, logLevel: "silent" });
+  });
+
+  it("loads a client route and navigates", async (t) => {
+    let page = await t.serve(await createSpaTestServer());
+
+    await page.goto("/");
+    await page.getByRole("heading", { name: "Home" }).waitFor();
+
+    await page.goto("/about");
+    await page.getByRole("heading", { name: "About" }).waitFor();
+    assert.equal(new URL(page.url()).pathname, "/about");
+  });
+});
+```
+
+## 配置发现、覆盖率与 CI
+
+默认发现规则覆盖 `.test`、`.test.browser` 与 `.test.e2e` 文件名。
+当应用需要自定义浏览器项目、排除路径、全局设置或覆盖率设置时，添加静态 `remix.json`。
+文件使用 JSONC，允许注释与尾随逗号：
+
+```jsonc filename=remix.json
+{
+  "$schema": "./node_modules/remix/schema/remix.json",
+  "test": {
+    "exclude": ["node_modules/**", "tmp/**"],
+    "setup": "./test/setup.ts",
+    "playwright": {
+      "configFile": "./playwright.config.ts",
+      "projects": ["chromium", "firefox"],
+    },
+    "coverage": {
+      // 保持本地运行快速；CI 中 `--coverage` 会启用这些设置。
+      "enabled": false,
+      "dir": ".coverage",
+      "include": ["app/**/*.{ts,tsx}"],
+      "exclude": ["app/**/*.test{,.browser,.e2e}.{ts,tsx}"],
+      "statements": 80,
+      "lines": 80,
+      "branches": 70,
+      "functions": 80,
+    },
+  },
+}
+```
+
+`playwright.projects` 列出要运行的 [Playwright 项目](https://playwright.dev/docs/test-projects)。
+项目是一组具名浏览器设置，通常每个浏览器一个，因此浏览器与端到端测试会在每个列出的项目里各运行一次。
+`setup` 模块可以导出 `globalSetup()` 与 `globalTeardown()`，在整个测试运行前后各执行一次，
+例如迁移测试数据库。`statements`、`lines`、`branches`、`functions` 是最低覆盖率百分比。
+覆盖率启用且任一项未达到时，测试运行失败。
+
+把 Playwright 可执行设置留在它自己的配置中并在那里定义项目，然后从 `remix.json` 引用该文件：
+
+```ts filename=playwright.config.ts
+import { defineConfig } from "playwright/test";
+
+export default defineConfig({
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    { name: "firefox", use: { browserName: "firefox" } },
+  ],
+});
+```
+
+显式标志会覆盖 `remix.json`，因此覆盖率禁用的配置保持本地运行快速，而 CI 用 `--coverage` 打开它。
+没有覆盖率设置的项目中，同一标志会产生一次性报告：
+
+```sh
+npm test -- --coverage
+```
+
+开发期间只运行你正在修改的边界：
+
+```sh
+npm test -- --type server
+npm test -- --type browser --project chromium
+npm test -- --type e2e --project chromium
+npm test -- --watch
+```
+
+CI 可以运行相同的 `npm test` 命令覆盖所有配置的测试类型。
+CI 镜像不包含 Playwright 系统依赖与浏览器二进制时，先安装：
+
+```sh
+npx playwright install --with-deps
+npm test -- --coverage
+npm run typecheck
+```
+
+CI 需要完全独立的静态配置时，使用 `remix test --config ./config/remix.ci.json`。
+`--config` 路径与默认 `remix.json` 都由 Remix CLI 选择，任一文件中的相对路径都从该文件目录解析。
+
+保持类型检查为独立命令。测试运行器执行 TypeScript，但不替代编译器全项目检查。

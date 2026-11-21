@@ -1,0 +1,394 @@
+---
+title: 用 Frame 流式渲染
+description: 如何用 Frame、回退内容以及服务端和浏览器帧解析器来流式渲染并重载路由拥有的 UI。
+icon: PanelsTopLeft
+---
+
+`<Frame>` 在当前页面中渲染另一条路由的 HTML。Remix 可以在发送页面前解析该路由、
+把它流式传输到回退内容之后，或者稍后在浏览器中重载它，而无需导航整个文档。
+
+frame 的工作方式类似 [`<iframe>`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe)：
+它有一个 `src` URL，该 URL 对应的路由返回 HTML。与 iframe 不同的是，
+这份 HTML 会成为当前文档的一部分。Remix 把它协调进活动 DOM：
+比较新 HTML 与现有节点，只更新变化的部分，而不是整体替换区域。
+因此 frame 内的焦点、输入值以及[水合组件](/docs/interactivity)的状态在重载后仍能保留。
+由于响应是普通 HTML，你可以在浏览器网络面板中查看它；
+frame 也可以加载任何返回 HTML 的路由，包括提供静态文件的路由。
+
+本章用一个带推荐区域的专辑页面，讲解 frame 路由、在服务端解析 frame 的渲染中间件、
+浏览器解析器，以及重载 frame 的链接、表单和处理器。最后讨论在按区域划分 frame
+与整页导航之间如何选择，以及如何在浏览器中运行同一个路由器。
+
+## 为路由拥有的 UI 使用 frame
+
+组件同步渲染，Remix 没有异步组件。数据加载发生在路由 action 中，
+action 把结果作为 props 传给组件。frame 让页面中的某个区域拥有自己的 action，
+并因此拥有自己的数据加载。组件不会仅仅因为慢或可交互就需要 frame。
+先从普通组件组合、单个[渲染页面](/docs/rendering-ui)和[会导航的表单](/docs/interactivity)开始。
+当某个区域应该有自己的路由，并至少具备以下行为之一时，再考虑 frame：
+
+- 它可以在周围页面之后到达。
+- 它需要在一次变更后独立重载。
+- 多个页面渲染同一个路由拥有的区域。
+- 它的数据与错误响应属于一次独立请求。
+
+给该区域一个自己的 `GET` 路由。对于专辑推荐，这条路由可以放在专辑页面旁边：
+
+```ts filename=app/routes.ts
+import { form, get, route } from "remix/routes";
+
+export const routes = route({
+  albums: route("/albums", {
+    show: get("/:albumId"),
+    recommendations: get("/:albumId/recommendations"),
+    edit: form("/:albumId/edit"),
+  }),
+});
+```
+
+action 只渲染 frame 需要的区域，不包含应用的 `Document` 外壳：
+
+```tsx filename=app/actions/albums/controller.tsx
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+import { getAlbum, getRecommendations } from "./data.ts";
+import { AlbumRecommendations } from "./recommendations.tsx";
+import { AlbumPage } from "./show-page.tsx";
+
+export default createController(routes.albums, {
+  actions: {
+    async show(context) {
+      let album = await getAlbum(context.params.albumId);
+      if (!album) return new Response("Album not found", { status: 404 });
+
+      return context.render(<AlbumPage album={album} />);
+    },
+
+    async recommendations(context) {
+      let album = await getAlbum(context.params.albumId);
+      if (!album) return new Response("Album not found", { status: 404 });
+
+      let recommendations = await getRecommendations(album);
+      return context.render(<AlbumRecommendations albums={recommendations} />);
+    },
+  },
+});
+```
+
+页面通过把该路由的 URL 作为 `src` 传给 `Frame` 来渲染它：
+
+```tsx filename=app/actions/albums/show-page.tsx
+import { Frame } from "remix/component";
+import type { Handle } from "remix/component";
+
+import { routes } from "../../routes.ts";
+import { Document } from "../document.tsx";
+import type { Album } from "./data.ts";
+
+export function AlbumPage(handle: Handle<{ album: Album }>) {
+  return () => {
+    let { album } = handle.props;
+
+    return (
+      <Document title={`${album.title} — Albums`}>
+        <main>
+          <h1>{album.title}</h1>
+          <Frame src={routes.albums.recommendations.href({ albumId: album.id })} />
+        </main>
+      </Document>
+    );
+  };
+}
+```
+
+没有 `fallback` 时，frame 是阻塞的。Remix 会等待推荐响应，然后才发送初始 HTML 块。
+浏览器仍然收到一个完整页面。
+
+## 先流式输出回退内容
+
+当专辑页面在推荐到达前就有用时，添加 `fallback`：
+
+```tsx
+<Frame
+  src={routes.albums.recommendations.href({ albumId: album.id })}
+  fallback={<p>Loading recommendations…</p>}
+/>
+```
+
+回退内容属于初始 HTML。当推荐 action 完成时，Remix 流式传输它渲染的 HTML 并替换回退内容。
+
+对于可能稍后到达、又不会让周围页面令人困惑的区域，使用回退内容。
+如果初始页面没有该区域就说不通，就让 frame 保持阻塞。
+回退内容是加载 UI，不是通用错误边界。frame 解析器——获取 frame `src` 并返回 HTML 的函数——
+以及应用的错误处理共同决定请求失败时发生什么。
+
+## 把响应渲染为流
+
+frame 通过 `remix/middleware/render` 的 `render()` 中间件在服务端解析。把它加入路由器。
+它为 action 提供 `context.render(...)`，流式输出组件树，并把 frame 请求送回同一个路由器：
+
+```ts filename=app/router.ts
+import { render } from "remix/middleware/render";
+import { createRouter } from "remix/router";
+
+import { assets } from "./assets.ts";
+
+export const router = createRouter({
+  middleware: [
+    render({
+      assets,
+      onError(error) {
+        console.error(error);
+      },
+    }),
+  ],
+});
+```
+
+该中间件转发 frame 路由需要的同源请求头，从内部 `GET` 请求中剥离 body 与传输相关头部，
+跟随重定向，并在外层请求取消时取消待处理的 frame 工作。
+它还使用资源服务器解析水合的 [client entry](/docs/interactivity)及其模块预加载。
+
+当应用需要不同的渲染器或响应类型时，使用 `renderWith(...)`。
+普通 HTML action 应使用标准的 `render()` 中间件。
+
+`remix/component/server` 的 `renderToString()` 是更小的替代方案：
+当代码在继续之前需要完整的 HTML 值（例如邮件预览或小型嵌入片段）时使用它：
+
+```tsx
+import { renderToString } from "remix/component/server";
+
+// 加载推荐之后：
+let html = await renderToString(<AlbumRecommendations albums={recommendations} />);
+```
+
+普通页面响应使用 `context.render(...)`。它会流式输出、支持 client entry，
+并允许带回退内容的 frame 在初始 HTML 之后到达。
+
+## 在浏览器中解析 frame
+
+阻塞式 frame 在浏览器收到页面前就完成解析。带回退内容的 frame 可能仍在等待，
+而任何 frame 都可能稍后重载。在浏览器入口中调用 [`run()`](/docs/interactivity)
+会安装默认的浏览器解析器，因此这些请求不需要额外配置。
+
+默认解析器获取同源 HTML、跟随重定向、保留表单提交方法与编码，
+并在 frame 被移除或请求被取代时取消请求。它还保留重定向目的地，
+以便导航可以在表单保存后更新浏览器 URL。
+
+当应用需要不同的请求或响应处理（例如另一种 body 编码，或滚动部署期间让 frame 请求
+留在同一部署的头部）时，在 `run()` 选项中传入自己的 `resolveFrame` 函数。
+默认解析器只是一个简短的 `fetch()` 调用，自定义实现可以从它的副本开始。
+
+Remix 在把返回的 HTML 协调进当前文档前**不会**净化它，同源的用户生成 HTML 也并非天然安全。
+返回不可信内容前先净化。
+
+## 命名并重载 frame
+
+当另一个 client entry 需要找到某个 frame 时，给它一个 `name`：
+
+```tsx
+<Frame
+  name="album-recommendations"
+  src={routes.albums.recommendations.href({ albumId: album.id })}
+  fallback={<p>Loading recommendations…</p>}
+/>
+```
+
+组件可以重载包含它的 frame、页面其他位置的具名 frame，或整个页面：
+
+```tsx
+// 重载包含当前组件的 frame。
+await handle.frame.reload();
+
+// 按名称重载已挂载的 frame。
+await handle.frames.get("album-recommendations")?.reload();
+
+// 从任意嵌套组件重载整个页面。
+await handle.frames.top.reload();
+```
+
+frame 未挂载时，`handle.frames.get(name)` 返回 `undefined`。重载后，
+Remix 用路由当前的 HTML 更新该区域。匹配内容中的 client entry 保留设置状态，
+并接收当前的服务端 props。
+
+## 用表单导航 frame
+
+`run()` 启动后，符合条件的同源表单会像链接一样走 frame 导航路径。
+这个 GET 表单不需要 client entry 或提交处理器，就能重载推荐 frame：
+
+```tsx
+<form
+  action={routes.albums.recommendations.href({ albumId: album.id })}
+  method="get"
+  data-rmx-target="album-recommendations"
+>
+  <button type="submit">Refresh recommendations</button>
+</form>
+```
+
+运行时启动前，表单仍是普通文档导航。原生
+[约束校验](https://developer.mozilla.org/en-US/docs/Web/HTML/Guides/Constraint_validation)
+（如 `required` 与 `pattern`）以及表单的 `submit` 事件在 Remix 拦截前运行。
+提交按钮的值优先于表单的值。这些属性控制导航：
+
+- `data-rmx-target` 选择一个具名 frame。
+- `data-rmx-src` 为该具名 frame 提供不同的请求 URL。
+- `data-rmx-reset-scroll="manual"` 保留当前滚动位置。
+- `data-rmx-reset-focus="manual"` 禁用浏览器的自动焦点重置。
+- `data-rmx-history="push|replace"` 控制导航如何更新历史。
+- `data-rmx-document` 退出拦截。
+
+滚动与焦点控制接受 `"after-transition"`（默认）与 `"manual"`。已有的 `"true"` 属性保持默认行为，
+`"false"` 选择 `"manual"`。`navigate()` 与 `link()` 的 `resetScroll`、`resetFocus` 选项接受相同字符串，
+以及为了兼容的 `true`/`false`。
+
+GET 控件的值已编码在目标 URL 中。对于非 GET 表单，默认解析器用表单的 method 与编码发送 body。
+当 action 收到 frame 请求时应为目标 frame 返回 HTML，同时为未增强提交保留正常的文档响应或重定向。
+对当前 URL 的非 GET 提交替换历史记录，而 GET 提交和提交到不同 URL 会新增记录。
+`data-rmx-history` 属性会覆盖这些默认值。
+
+## 协调一次变更与独立的 frame 重载
+
+先从一个不需要浏览器 JavaScript 也能工作的表单开始。client entry 可以拦截同一次提交，
+发送它的 `FormData`，并在 action 成功后重载另一条路由：
+
+```tsx
+import { on } from "remix/component";
+
+// 在 client-entry 组件的渲染函数内：
+<form
+  action={routes.albums.edit.action.href({ albumId: album.id })}
+  method="post"
+  mix={on("submit", async (event, signal) => {
+    let form = event.currentTarget;
+    event.preventDefault();
+
+    let response = await fetch(form.action, {
+      body: new FormData(form),
+      method: form.method,
+      signal,
+    });
+
+    if (signal.aborted) return;
+    if (!response.ok) {
+      // 在这里渲染应用的校验或请求错误。
+      return;
+    }
+
+    await handle.frames.get("album-recommendations")?.reload();
+  })}
+>
+  {/* 专辑字段 */}
+</form>;
+```
+
+自定义处理器之所以值得，是因为变更响应与推荐 frame 是两次不同的请求。
+变更留在编辑 action，推荐 HTML 留在它的 `GET` action，浏览器组件只负责编排它们。
+当表单 action 本身返回目标 frame 应有的 HTML 时，优先使用 `data-rmx-target`，让运行时提交它。
+
+选择与响应匹配的更新方式：
+
+- 当响应应替换整个页面时，使用普通导航。
+- 当浏览器组件自己渲染返回的数据时，获取 JSON。
+- 当一个 `GET` action 渲染某个区域的 HTML，且只有该区域需要更新时，重载 frame。
+
+## 从链接触发 frame
+
+链接可以在 `href` 中保留公开目的地，同时把更小的路由加载进具名 frame：
+
+```tsx
+// 在渲染专辑链接的组件内：
+<a
+  href={routes.albums.show.href({ albumId: album.id })}
+  data-rmx-src={routes.albums.recommendations.href({ albumId: album.id })}
+  data-rmx-target="album-recommendations"
+  data-rmx-reset-scroll="manual"
+  data-rmx-reset-focus="manual"
+>
+  Show recommendations
+</a>
+```
+
+`data-rmx-target` 选择已挂载的具名 frame，`data-rmx-src` 选择填充它的请求。
+地址栏仍会移动到 `href`。如果省略 target，Remix 用 `href` 作为顶层 frame
+（容纳整个文档的隐式 frame）的来源，使其与浏览器 URL 同步。
+如果指定 target 没有匹配已挂载 frame，浏览器执行文档导航。
+无论 target 如何，提供的 `data-rmx-src` 仍必须是有效的同源 URL，无效或跨源值也会禁用拦截。
+
+添加 `data-rmx-prefetch="intent"` 或 `"viewport"`，可在导航前[预取](/docs/interactivity)相同的来源与目标。
+链接属性不合适时，改为调用 `prefetch(src, { target })`。
+
+当它应替换当前历史记录时添加 `data-rmx-history="replace"`。
+当同源链接必须执行普通文档导航时使用 `data-rmx-document`。
+
+这些 `"manual"` 值在导航期间禁用自动滚动恢复与焦点重置。
+如果更新移除了拥有焦点的元素，它们无法保留焦点。
+
+## 选择按区域 frame 还是整页导航
+
+`run()` 启动后，每个被拦截的链接与表单已经会重载顶层 frame，也就是整个文档。
+Remix 把新页面协调进当前页面，因此 client entry 保留局部状态，浏览器保留滚动与焦点行为。
+具名 frame 是在此之上的补充，而非必需。在两种形状之间选择：
+
+- **整页导航。** 把区域渲染为页面内的普通组件，让链接和表单重载顶层 frame。
+  每个 action 返回完整文档，因此一条路由的代码集中在一处，不需要区分 frame 请求与文档请求。
+  代价是每次交互都在服务端渲染整个页面；这在该渲染很快时效果最好。
+- **按区域 frame。** 给区域自己的路由，并用 `data-rmx-target` 或
+  `handle.frames.get(name)?.reload()` 定位它。只有该区域会渲染和重载。
+  代价是间接性：要了解区域渲染什么，需要跟随它的 `src` 到另一条路由；
+  同时服务完整页面和具名 frame 的路由必须检查请求。
+  默认解析器在每个 frame 请求上发送 `X-Remix-Frame: true`，并为具名 frame 添加 `X-Remix-Target`。
+
+从整页导航开始，当某个区域需要在页面之后流式到达、独立重载或被多个页面共享时，
+再把它移进自己的 frame。
+
+## 没有服务器时解析 frame
+
+路由器不必运行在服务器上。路由、控制器和中间件都建立在 `Request` 与 `Response` 之上，
+因此同一个路由器可以在浏览器中运行，实现客户端渲染应用。`remix/spa` 把它连接到浏览器运行时：
+
+```tsx filename=app/main.tsx
+import { createRouter } from "remix/router";
+import { render, run } from "remix/spa";
+
+import { routes } from "./routes.ts";
+import controller from "./actions/controller.tsx";
+
+const router = createRouter({
+  middleware: [render()],
+});
+
+router.map(routes, controller);
+
+const app = run(router, { fallback: <p>Loading…</p> });
+await app.ready();
+```
+
+与服务端渲染应用相比有两处变化：
+
+- `remix/spa` 的 `render()` 取代渲染中间件。action 仍然调用 `context.render(...)`
+  并返回 `Response`，因此重定向、状态码和中间件照常工作，
+  但渲染出的组件树直接进入浏览器运行时，而不是序列化为 HTML。给 `render()` 传一个函数，
+  可以用共享布局包裹每条路由。
+- `remix/spa` 的 `run(router)` 通过在页面内调用 `router.fetch(...)` 来解析当前 URL
+  和之后的每次 frame 导航。除非 action 发起请求，否则不会有网络请求。
+
+控制器与路由可以在两种设置之间原样共享，变化的是它们周围的基础设施。
+浏览器无法打开数据库，因此 action 改为从浏览器侧 store 读取或调用 API。
+
+## 处理失败与取消
+
+服务端渲染器的 `onError` 和浏览器应用的 `error` 事件是报告钩子。
+默认浏览器解析器会渲染 `400` 这类 HTML 校验响应，
+但通过浏览器应用的 `error` 事件报告服务端错误（`500` 及以上）和非 HTML 错误响应。
+
+如果延迟 frame 在其回退内容发送后失败，服务器无法用新的错误响应替换整个页面。
+让回退内容保持有用、报告错误，并在安全时让周围页面继续。
+
+把 `request.signal` 贯穿服务端 frame 工作。默认浏览器解析器把取消信号转发给 `fetch()`，
+自定义解析器也应如此。
+
+明确如何[报告流式渲染失败](/docs/errors-and-cancellation)与
+[frame 解析失败](/docs/errors-and-cancellation)。在生产环境中，
+确保[中止信号贯穿流式工作](/docs/production)，并且[压缩不会破坏流](/docs/production)。

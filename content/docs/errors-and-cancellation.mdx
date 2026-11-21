@@ -1,0 +1,335 @@
+---
+title: 错误与取消
+description: 预期的 HTTP 失败、未捕获的服务端错误、渲染失败、客户端运行时错误与中止的工作如何在 Remix 中传播。
+icon: TriangleAlert
+---
+
+Remix 不会把每种失败都变成组件错误边界。预期结果是响应；意外异常穿过路由器边界；
+渲染与浏览器运行时错误使用显式报告钩子。
+
+本章覆盖五条失败路径与一条取消路径：
+
+| 情况                       | 处理位置                                      |
+| -------------------------- | --------------------------------------------- |
+| 校验失败、冲突、未找到     | 控制器返回带状态码的 `Response`               |
+| action / 中间件抛出异常    | 服务器入口的 `onError` 或 `try`/`catch`       |
+| 渲染失败（阻塞或流式）     | `render({ onError })`、`renderToStream` 选项  |
+| frame 解析失败             | 自定义 `resolveFrame`                         |
+| 浏览器水合 / 组件运行时错误 | `run()` 返回的运行时的 `error` 事件           |
+| 客户端断开                 | `request.signal`、`handle.signal` 与任务信号  |
+
+## 把预期失败作为响应返回
+
+校验错误、冲突、认证失败、禁止操作与记录不存在都属于路由契约的一部分。
+直接返回预期的状态、头部和 HTML/JSON 响应体：
+
+```tsx
+import * as s from "remix/data-schema";
+import { redirect } from "remix/response/redirect";
+
+export default createController(routes.albums.edit, {
+  actions: {
+    async action(context) {
+      let parsed = s.parseSafe(albumForm, context.formData);
+
+      if (!parsed.success) {
+        return context.render(
+          <AlbumEditPage album={album} values={values} issues={parsed.issues} />,
+          { status: 400 },
+        );
+      }
+
+      let album = await context.db.find(albums, context.params.albumId);
+      if (album === null) {
+        return new Response("Album not found", { status: 404 });
+      }
+
+      if (!(await canEditAlbum(context, album))) {
+        return new Response("Not Found", { status: 404 });
+      }
+
+      await context.db.update(albums, album.id, parsed.value);
+      return redirect(routes.albums.show.href({ albumId: album.id }), 303);
+    },
+  },
+});
+```
+
+不要把预期失败抛出再在别处翻译成响应：那样会丢失具体状态码，还会让日志把正常业务结果记成故障。
+抛出只留给**意外**情况，例如数据库断开、代码缺陷或未处理的第三方错误。
+
+## 渲染有用的未找到响应
+
+action 知道缺少什么时，返回路由特有的 `404` 页面，而不是裸文本：
+
+```tsx
+if (album === null) {
+  return context.render(<AlbumNotFound />, {
+    status: 404,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+```
+
+未匹配的 URL 交给路由器的默认 `404` 响应。公开错误响应体里不要出现内部记录 ID、
+SQL 语句、堆栈或异常消息；这些细节写入服务端日志，用请求 ID 与用户可见信息关联。
+
+## 在服务器边界处理未捕获的 action 与中间件错误
+
+action 或中间件抛出异常时，`router.fetch(...)` 会 reject。服务器入口是最后一道防线：
+
+```ts filename=server.ts
+import * as http from "node:http";
+import { createRequestListener } from "remix/node-fetch-server";
+
+import { router } from "./app/router.ts";
+
+const requestListener = createRequestListener(router.fetch, {
+  onError(error) {
+    let requestId = crypto.randomUUID();
+    console.error("Unhandled request error", { requestId, error });
+
+    return new Response("Internal Server Error", {
+      status: 500,
+      headers: { "X-Request-Id": requestId },
+    });
+  },
+});
+
+const server = http.createServer(requestListener);
+server.listen(44100);
+```
+
+`createRequestListener(...)` 的 `onError` 在响应字节开始发送之前触发。
+返回自定义响应可以添加请求 ID 或 JSON 错误结构；返回 `undefined` 会使用默认 `500`。
+一旦响应体已经开始发送（例如流式页面），服务器无法再把它替换成错误页，
+此时只能报告错误并结束流。
+
+如果不用 `onError`，就在适配器周围显式捕获：
+
+```ts
+const requestListener = createRequestListener(async (request) => {
+  try {
+    return await router.fetch(request);
+  } catch (error) {
+    console.error(error);
+    return new Response("Internal Server Error", { status: 500 });
+  }
+});
+```
+
+日志中记录结构化字段（请求 ID、方法、路径、用户 ID），不要记录 Cookie、Authorization 头或表单中的敏感字段。
+
+## 报告流式渲染失败
+
+`render()` 中间件在组件第一次产出 HTML 块之前抛出错误时，`router.fetch()` 会 reject，
+因此服务器边界可以返回 `500`。它**自己**抛出错误，所以只有运行在 `render()` 之前的中间件能捕获到；
+如果响应体被替换或转换（例如在 `render()` 内部压缩），错误只会报告给 `onError`。
+
+给中间件传 `onError`：
+
+```ts filename=app/router.ts
+import { render } from "remix/middleware/render";
+import { createRouter } from "remix/router";
+
+import { assets } from "./assets.ts";
+
+export const router = createRouter({
+  middleware: [
+    render({
+      assets,
+      onError(error, context) {
+        console.error("Render failed", {
+          path: context?.url.pathname,
+          error,
+        });
+      },
+    }),
+  ],
+});
+```
+
+直接使用 `renderToStream()` 时，自己传 `onError` 与 `request.signal`：
+
+```tsx
+import { renderToStream } from "remix/component/server";
+
+let stream = renderToStream(<AlbumPage album={album} />, {
+  signal: request.signal,
+  onError(error) {
+    console.error("Render failed", error);
+  },
+});
+
+return new Response(stream, {
+  headers: { "Content-Type": "text/html; charset=utf-8" },
+});
+```
+
+失败时机决定结果：
+
+- **根渲染或阻塞渲染失败**：报告错误并 reject 流。若还没发送任何字节，服务器仍可返回 `500`。
+- **非阻塞 frame 或流式尾部失败**：报告错误，已渲染的回退内容保留。此时不能替换整个页面，
+  所以回退内容要保持有用，错误进入日志与浏览器运行时的报告。
+- **`HEAD` 请求**：与 `GET` 一样会 reject。
+
+## 负责 frame 解析失败
+
+默认 frame 解析器会渲染 `400` 这类 HTML 校验响应，但把 `500` 及以上和非 HTML 错误响应
+通过浏览器运行时的 `error` 事件报告。应用可以提供自己的 `resolveFrame`：
+
+```tsx
+let app = run({
+  async loadModule(moduleUrl, exportName) {
+    let module = await importModule(moduleUrl);
+    return module[exportName];
+  },
+
+  async resolveFrame(src, signal, request) {
+    let response = await fetch(src, { signal, headers: request?.headers });
+
+    if (response.ok) {
+      return response.body ?? "";
+    }
+
+    if (response.status === 401) {
+      // 保留应用的登录重定向策略
+      return '<p>请先登录。</p>';
+    }
+
+    // 明确返回有界回退，避免把错误页塞进区域
+    return '<p>此区域暂时不可用。</p>';
+  },
+});
+```
+
+解析器还可以 reject，让渲染/运行时错误处理器接管。无论哪种方式，都要把取消信号传给 `fetch()`。
+对不可信 HTML 先净化再协调进文档；Remix 不会替你做这件事。
+
+## 在应用根处理浏览器运行时错误
+
+`run()` 返回的运行时为水合、组件、调度器与 frame 失败发出 `error` 事件。
+在浏览器入口监听一次：
+
+```ts filename=app/actions/public/entry.ts
+import { run } from "remix/component";
+
+let app = run({
+  async loadModule(moduleUrl, exportName) {
+    let module = await import(moduleUrl);
+    return module[exportName];
+  },
+});
+
+app.addEventListener("error", (event) => {
+  console.error("Component error:", event.error);
+
+  // 上报到错误追踪服务，带上页面与组件信息
+  reportError(event.error);
+});
+
+await app.ready();
+```
+
+需要时销毁损坏的运行时状态并渲染或导航到应用自有的回退页面：
+
+```ts
+app.addEventListener("error", (event) => {
+  reportError(event.error);
+
+  let fallback = document.getElementById("app-error");
+  if (fallback) {
+    fallback.hidden = false;
+  }
+});
+```
+
+不要在每个组件里重复全局监听；一个根级监听器足以覆盖水合与 frame 错误。
+组件内的预期失败仍应作为 UI 状态处理（`error` 变量 + `role="alert"`），而不是抛到全局。
+
+## 把请求中止视为取消
+
+请求中止时，路由器以 `request.signal.reason` reject。把信号传进数据库、fetch、上传与渲染工作：
+
+```ts
+export default createController(routes.albums.search, {
+  async actions(context) {
+    let response = await fetch(upstreamUrl, {
+      signal: context.request.signal,
+    });
+
+    let data = await response.json();
+    if (context.request.signal.aborted) {
+      return new Response(null, { status: 499 });
+    }
+
+    return Response.json(data);
+  },
+});
+```
+
+Node 适配器在客户端断开后会丢弃响应，因此不要把预期中止记录为服务器失败。
+在日志里用 `signal.reason` 区分“客户端离开”和“上游超时”。
+
+## 让组件清理匹配工作的生命周期
+
+浏览器端有多种信号，按工作寿命选择最窄的那个：
+
+| 信号                                | 何时中止                             | 用于                                             |
+| ----------------------------------- | ------------------------------------ | ------------------------------------------------ |
+| `on(...)` 处理器的第二个参数        | 同一处理器再次运行或元素被移除       | 最新事件应替换先前工作的请求                     |
+| 排队任务的参数                      | 组件再次渲染或断开                   | 以 prop 为键的加载与渲染后 DOM 工作              |
+| `ref` 的第二个参数                  | 该 DOM 节点被移除                    | 观察器、元素私有的监听器                         |
+| `handle.signal`                     | 组件断开                             | 组件生命周期的定时器、全局监听器、模型订阅       |
+
+```tsx
+import { clientEntry, on } from "remix/component";
+import type { Handle } from "remix/component";
+
+export const AlbumSearch = clientEntry(
+  import.meta.url,
+  function AlbumSearch(handle: Handle<{ searchHref: string }>) {
+    let error: string | undefined;
+    let loading = false;
+
+    return () => (
+      <div>
+        <input
+          aria-label="搜索专辑"
+          mix={on("input", async (event, signal) => {
+            loading = true;
+            error = undefined;
+            handle.update();
+
+            try {
+              let url = new URL(handle.props.searchHref, window.location.href);
+              url.searchParams.set("query", event.currentTarget.value);
+
+              let response = await fetch(url, { signal });
+              if (!response.ok) {
+                throw new Error(`搜索失败：${response.status}`);
+              }
+            } catch (caught) {
+              if (signal.aborted) return;
+              error = caught instanceof Error ? caught.message : "搜索失败";
+            }
+
+            if (signal.aborted) return;
+            loading = false;
+            handle.update();
+          })}
+          type="search"
+        />
+        {error ? <p role="alert">{error}</p> : null}
+        {loading ? <p>搜索中…</p> : null}
+      </div>
+    );
+  },
+);
+```
+
+在应用异步结果前检查信号：`fetch` 支持信号，但 `await response.json()` 之类的后续步骤不会自动取消。
+组件结束时，`handle.signal` 会中止，因此用它注册的全局监听器和定时器无需手写卸载逻辑。
+
+把这几条路径组合起来：预期失败是响应，意外异常到服务器边界，渲染失败进 `onError`，
+frame 失败由解析器决定，浏览器失败进根级 `error` 事件，所有异步工作都带一个正确作用域的取消信号。

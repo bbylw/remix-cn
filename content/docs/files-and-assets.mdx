@@ -1,0 +1,971 @@
+---
+title: 文件与资源
+description: Remix 如何提供静态文件与源码资源、接受有界上传、存储文件并返回 HTTP 文件响应。
+icon: FolderOpen
+---
+
+Remix 应用提供三类文件，每一类在应用中的路径都不同：
+
+- **原样提供的文件**（如 favicon）位于根 `public/` 目录，由 `remix/middleware/static`
+  的 `staticFiles()` 提供。
+- **需要编译的浏览器源码**（TypeScript、CSS、图片）位于 `app/` 下的 `public/` 目录，
+  由 `remix/assets` 的 `createAssetServer()` 提供。
+- **用户上传**由 `remix/middleware/form-data` 的 `formData()` 解析，
+  保存在 `remix/file-storage`，并通过 `remix/response/file` 的 `createFileResponse()` 返回。
+
+## 用 staticFiles() 原样提供文件
+
+源码与浏览器之间永不变化的文件（如 `favicon.svg`、`robots.txt`）属于根 `public/` 目录。
+用 `staticFiles()` 在路由器中间件靠前的位置提供它们：
+
+```ts filename=app/router.ts
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+import { createRouter } from "remix/router";
+
+import { assets } from "./assets.ts";
+
+export const router = createRouter({
+  middleware: [staticFiles("./public", { index: false }), render({ assets })],
+});
+```
+
+对 `/favicon.svg` 的请求会返回 `public/favicon.svg`，带 `Content-Type`、ETag，
+并支持条件请求与范围请求。`staticFiles()` 只响应 `GET` 与 `HEAD`，
+没有文件匹配时请求继续流向路由器其余部分。当 `/` 应到达首页而不是查找
+`public/index.html` 时，设置 `index: false`。
+
+其他选项控制哪些文件可见以及如何缓存：
+
+```ts
+staticFiles("./public", {
+  index: false,
+  cacheControl: "public, max-age=3600",
+  filter: (path) => !path.split("/").some((segment) => segment.startsWith(".")),
+});
+```
+
+`filter` 接收相对于目录的请求路径，因此这个过滤器隐藏点文件。
+`cacheControl`、`etag`、`lastModified` 与 `createFileResponse()` 接受的选项相同。
+要提供多个目录，再添加一个带自己选项的 `staticFiles()`。
+
+## 资源服务器如何工作
+
+浏览器代码不只需要静态目录。它用 TypeScript 和 JSX 编写、导入 npm 包、引用样式表和图片，
+开发时应自动重载，生产环境应压缩并激进缓存。这些通常是打包器的工作。
+`remix/assets` 的资源服务器无需构建步骤就能处理：
+
+- **没有入口点。** 你不需要预先提供模块图，只需告诉它浏览器可以请求哪些文件，
+  它在请求时逐个编译。
+- **一次编译一个文件。** TypeScript/JSX 变成 JavaScript，但导入保持原样。
+  `remix/component` 这样的裸说明符通过 import map 解析，因此浏览器中运行的代码看起来就像你的源码。
+- **原本由构建清单回答的问题在请求时回答。** `getScriptEntry()`、`getHref()`、
+  `getPreloads()` 在渲染页面时告诉你资源的公开 URL 及依赖。
+- **开发与生产工作方式相同。** watch、压缩与指纹只是设置，部署时架构不变。
+- **按模块缓存。** 生产中修改一个模块只使该模块失效。与打包器哈希会级联到所有导入文件不同，
+  导入它的模块保持缓存 URL。
+- **它就是一个 fetch 处理器。** `assets.fetch(request)` 返回 `Response`，
+  请求不是可提供的资源时返回 `null`，不与 Remix 内部绑定。
+
+代价是浏览器下载许多小模块而不是几个大 bundle。预加载与 HTTP/2 让下载并行，
+大多数应用（尤其是新应用）不需要更多。非常大的应用最终可能受益于打包器，
+但把它当作测量出需求后再加的优化，而不是开始的前提。
+
+## 用资源服务器提供浏览器源码
+
+在独立模块（如 `app/assets.ts`）中创建资源服务器，让路由器、控制器和文档共享一个实例：
+
+```ts filename=app/assets.ts
+import { createAssetServer } from "remix/assets";
+
+export const assets = createAssetServer({
+  basePath: "/assets",
+  rootDir: process.cwd(),
+  allowFiles: ["app/routes.ts", "app/**/public/**"],
+  allowPackages: ["remix"],
+  denyFiles: ["app/**/*.test.*"],
+});
+```
+
+`basePath` 是资源的 URL 命名空间。编译后的模块与样式表通过 URL 相互引用，
+因此资源服务器也用它写回指向自己的链接。文件通过两个保留目录下路径的默认挂载提供：
+
+- `app/actions/public/entry.ts` 提供在 `/assets/app/actions/public/entry.ts`。
+- `node_modules/remix/...` 提供在 `/assets/npm/remix/...` 下。
+
+资源服务器只回答到达它的请求，因此给它一条路由和一个 action：
+
+```ts filename=app/routes.ts
+import { get, route } from "remix/routes";
+
+export const routes = route({
+  assets: get("/assets/*path"),
+  home: "/",
+});
+```
+
+```tsx filename=app/actions/controller.tsx
+import { createController } from "remix/router";
+
+import { assets } from "../assets.ts";
+import { routes } from "../routes.ts";
+
+export default createController(routes, {
+  actions: {
+    async assets(context) {
+      return (await assets.fetch(context.request)) ?? new Response("Not Found", { status: 404 });
+    },
+    // ...
+  },
+});
+```
+
+对任何无法提供的请求（包括被拒绝的文件和过期指纹），`assets.fetch()` 解析为 `null`，
+因此 action 提供 `404`。
+
+同一个服务器也传给 `app/router.ts` 中 `render({ assets })`，
+渲染器就是这样把水合组件变成脚本 URL 的。
+
+## 控制浏览器能访问什么
+
+`allowFiles`、`allowPackages` 与 `denyFiles` 决定浏览器能下载服务器上的哪些文件。
+把它们当作安全边界，而不是构建配置：它们允许的任何内容，知道 URL 的人都能请求。
+
+上面的配置允许应用中的两类内容：
+
+- `app/**/public/**` 允许 `app/` 下任意 `public/` 目录中的文件。
+  把浏览器代码放在它最窄的拥有者旁边，例如 `app/actions/albums/edit/public/`
+  或 `app/ui/public/`，让你、审查者或代理能从路径判断浏览器是否能访问。
+- `app/routes.ts` 被单独允许，让浏览器代码可以导入 `routes` 并用
+  `routes.albums.show.href(...)` 构建链接。
+
+浏览器模块中的每个本地导入也必须被允许。把浏览器模块的本地依赖放在同一个 `public/` 目录，
+或另一个 `public/` 目录。如果浏览器模块导入仅服务端文件，资源服务器会拒绝编译它，而不是暴露该文件。
+
+`denyFiles` 优先于两个允许列表。拒绝 `app/**/*.test.*` 让测试可以放在被测试的浏览器模块旁边，
+又不会变成可下载文件。
+
+### 在浏览器代码中使用 npm 包
+
+浏览器代码按名称导入 npm 包，import map 把每个名称指向 `/assets/npm` 挂载：
+
+```ts filename=app/ui/public/release-date.ts
+import { format } from "date-fns";
+
+export function formatReleaseDate(date: Date) {
+  return format(date, "MMMM d, yyyy");
+}
+```
+
+包有几条规则：
+
+- 把浏览器代码导入的每个包加入 `allowPackages`，例如 `["remix", "date-fns"]`。
+  它的依赖与已安装的可选依赖会自动允许；peer 依赖不会，需显式列出。
+- 资源服务器提供 ES 模块。只发布 CommonJS 的包会编译失败。
+- 要保留某个导入不动（例如页面通过自己的 import map 条目提供的模块），
+  把说明符列进 `scripts.external`。
+
+### 用 remix assets 调试资源 URL
+
+浏览器模块加载失败时，资源服务器通过 `onError` 钩子报告编译错误，
+默认记录错误并响应 `500`。错误码说明是哪条规则阻止了它：
+
+- `IMPORT_NOT_ALLOWED`：导入解析到没有允许规则匹配、或被拒绝规则匹配的文件。
+- `IMPORT_OUTSIDE_MOUNTS`：文件存在但没有公开 URL，因为没有挂载覆盖它。
+- `IMPORT_NOT_SUPPORTED`：导入不是脚本，例如 `import "./styles.css"`。
+  样式表和图片应通过 URL 引用。
+
+要查看浏览器能访问什么，直接询问资源服务器：
+
+```ts
+import { assets } from "./app/assets.ts";
+
+let details = await assets.getAssetDetails("/assets/app/ui/public/release-date.ts");
+console.log(details.status, details.access?.deniedBy);
+```
+
+`getAssetDetails()` 接受 URL 或文件路径，报告它是 `reachable`、`denied`、`not-allowed`、
+`missing`、`unmapped` 还是 `unsupported`，以及负责的规则。`getAssets()` 列出所有可达文件及其 URL。
+
+`remix assets` 命令从终端打印相同信息：`remix assets` 以 `URL -> file` 列出所有可达文件，
+`remix assets inspect <url-or-file>` 解释一个映射。CLI 从 `remix.json` 的 `assets` 段读取配置，
+而不是 `app/assets.ts`。你可以把配置移进 `remix.json`，让服务器与 CLI 共享。
+
+## 加载浏览器脚本
+
+运行浏览器代码的页面需要资源服务器提供三样东西：入口模块的 URL、它依赖的每个模块的 URL，
+以及裸说明符的 import map。`getScriptEntry()` 一次返回三者。
+每个请求都调用它，而不是启动时只调用一次：开发期间文件变化（通过 `watch` 或 HMR）后结果会变，
+`getScriptEntry()` 在中间会缓存结果。
+
+```ts filename=app/assets.ts
+const entry = "app/actions/public/entry.ts";
+
+export async function getMainScriptEntry() {
+  return await assets.getScriptEntry(entry);
+}
+```
+
+文档把结果作为 prop 接收并渲染进 `<head>`：
+
+```tsx filename=app/actions/document.tsx
+import type { ScriptEntry } from "remix/assets";
+import type { Handle, RemixNode } from "remix/component";
+import { ImportMap } from "remix/component/server";
+
+interface DocumentProps {
+  children?: RemixNode;
+  scriptEntry: ScriptEntry;
+  title?: string;
+}
+
+export function Document(handle: Handle<DocumentProps>) {
+  return () => {
+    let { href, importMap, preloads } = handle.props.scriptEntry;
+
+    return (
+      <html lang="en">
+        <head>
+          <meta charSet="utf-8" />
+          <title>{handle.props.title ?? "Albums"}</title>
+          <ImportMap value={importMap} />
+          {preloads.map((preloadHref) => (
+            <link key={preloadHref} rel="modulepreload" href={preloadHref} />
+          ))}
+          <script type="module" src={href}></script>
+        </head>
+        <body>{handle.props.children}</body>
+      </html>
+    );
+  };
+}
+```
+
+action 在渲染时传入它：
+
+```tsx
+// 在 action 内：
+return context.render(
+  <Document scriptEntry={await getMainScriptEntry()} title="Albums">
+    <AlbumList albums={albums} />
+  </Document>,
+);
+```
+
+`preloads` 列出入口依赖的每个模块。没有这些 `<link rel="modulepreload">` 标签，
+浏览器会下载入口、发现导入、再下载、一层层重复。有了它们，浏览器一次请求整个图。
+
+这也回答了“文件是不是太多了？”：许多小模块通过 HTTP/2 并行下载。
+普通 `node:http` 服务器使用 HTTP/1.1，因此生产部署通常从前置代理或 CDN 获得 HTTP/2。
+
+`remix/component/server` 的 `<ImportMap>` 渲染入口的 import map，并与页面上水合组件的
+import map 合并，让文档包含一份完整映射。frame 响应之后可以添加映射。
+不支持单页多个 import map 的浏览器需要 `remix/multiple-import-maps-polyfill`，
+浏览器入口可以加载它。
+
+### client entry 如何找到自己的脚本
+
+水合组件用 `clientEntry(import.meta.url, ...)` 声明代码位置。在服务端，
+`import.meta.url` 是组件模块的 `file://` URL，对浏览器没有意义。
+页面渲染时，`render({ assets })` 把该 ID 传给 `assets.getScriptEntry()`，
+取回组件模块的公开 `href`、`preloads` 与 import map。这个查找正是打包器构建清单通常提供的部分。
+Remix 组件不依赖资源服务器，它们只需要能把入口 ID 解析为 URL 的东西。
+
+如果你自己调用 `remix/component/server` 的 `renderToStream()` 而不是 `render()`，
+把该查找作为 `resolveClientEntry` 选项传入：
+
+```tsx
+// 在 action 内：
+let stream = renderToStream(<AlbumPage album={album} />, {
+  async resolveClientEntry(entryId, component) {
+    let { href, importMap, preloads } = await assets.getScriptEntry(entryId);
+    let exportName = entryId.split("#")[1] || component.name;
+    return { href, importMap, preloads, exportName };
+  },
+});
+
+return new Response(stream, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+```
+
+### Barrel 文件
+
+包常通过 `index.js` barrel 重新导出一切。当你通过 barrel 导入具名绑定
+（如 `import { css } from "remix/component"`）时，资源服务器把导入重写到定义 `css` 的模块，
+让浏览器跳过 barrel 及其重新导出的无关模块。
+
+它只跳过包通过 `package.json` 的
+[`sideEffects` 字段](https://webpack.js.org/guides/tree-shaking/#mark-the-file-as-side-effect-free)
+标记为无副作用的模块（打包器做 tree shaking 也用该字段），否则按原样提供导入。
+把它设为 `false`，或设为确实有副作用的文件列表：
+
+```json filename=package.json
+{
+  "sideEffects": false
+}
+```
+
+## 引用样式、图片与字体
+
+浏览器模块只能导入其他脚本，因此样式表、图片和字体通过 URL 引用。
+`getHref()` 返回任何被允许资源的公开 URL：
+
+```ts filename=app/assets.ts
+import { createAssetServer } from "remix/assets";
+
+export const assets = createAssetServer({
+  basePath: "/assets",
+  rootDir: process.cwd(),
+  allowFiles: ["app/routes.ts", "app/**/public/**"],
+  allowPackages: ["remix"],
+  denyFiles: ["app/**/*.test.*"],
+  files: {
+    extensions: [".svg", ".png", ".jpg", ".woff2"],
+  },
+});
+
+export const stylesheetHref = await assets.getHref("app/actions/public/app.css");
+```
+
+样式表默认提供。图片、字体和其他叶子文件只有在扩展名列入 `files.extensions` 时才提供。
+
+把样式表渲染到文档 `<head>` 中脚本入口旁边：
+
+```tsx filename=app/actions/document.tsx
+<link rel="stylesheet" href={stylesheetHref} />
+```
+
+CSS 中的相对 `@import` 与 `url()` 引用会被重写为资源 URL，因此样式表可以引用旁边的字体和图片：
+
+```css filename=app/actions/public/app.css
+@import "./reset.css";
+
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter.woff2") format("woff2");
+}
+```
+
+要在样式表解析前开始下载字体，用
+`<link rel="preload" href={fontHref} as="font" type="font/woff2" crossOrigin="anonymous" />`
+预加载同一个 URL，其中 `fontHref` 来自 `getHref()`。样式表也可以通过 `getPreloads()` 预加载，
+但单个 `<link rel="stylesheet">` 很少值得更多。
+
+### 把资源 URL 传给组件
+
+`getHref()` 是异步的且在服务端运行，而组件同步渲染。渲染前解析 URL，再作为 props 传入。
+资源旁边的辅助函数可以用 `import.meta.url` 定位它：
+
+```ts filename=app/ui/cover-placeholder.ts
+import { assets } from "../assets.ts";
+
+export function getCoverPlaceholderHref() {
+  return assets.getHref(new URL("./public/cover-placeholder.svg", import.meta.url).href);
+}
+```
+
+```tsx filename=app/actions/albums/controller.tsx
+// 在 show action 内：
+let placeholderHref = await getCoverPlaceholderHref();
+
+return context.render(<AlbumPage album={album} placeholderHref={placeholderHref} />);
+```
+
+每个页面都需要值（如样式表）属于 `app/assets.ts`；单条路由需要的值属于它的 action。
+有些应用改用异步函数解析文档资源并返回 `Document` 组件，把查找放在使用它的标记旁边。
+
+### 转换图片和其他文件
+
+文件转换会在文件到达浏览器途中改变它，例如调整图片尺寸或转换为 WebP。
+请求转换在资源服务器中命名，并按 URL 选择：
+
+```ts filename=app/assets.ts
+import { createAssetServer, createFsFileCache, defineFileTransform } from "remix/assets";
+import sharp from "sharp";
+
+export const assets = createAssetServer({
+  // ...
+  files: {
+    extensions: [".svg", ".png", ".jpg", ".woff2"],
+    transforms: {
+      resize: defineFileTransform({
+        extensions: [".png", ".jpg"],
+        param: true,
+        async transform(bytes, { param }) {
+          let width = Number(param);
+
+          if (!Number.isInteger(width) || width < 16 || width > 2000) {
+            throw new TypeError("Expected a width between 16 and 2000");
+          }
+
+          return sharp(bytes).resize({ width }).toBuffer();
+        },
+      }),
+      webp: defineFileTransform({
+        extensions: [".png", ".jpg"],
+        async transform(bytes) {
+          let content = await sharp(bytes).webp({ quality: 80 }).toBuffer();
+          return { content, extension: ".webp" };
+        },
+      }),
+    },
+    cache: createFsFileCache(),
+    cacheKey: process.env.GIT_COMMIT_SHA,
+  },
+});
+```
+
+用 `getHref()` 串联转换：普通名称运行转换，`[name, param]` 元组传参数：
+
+```ts
+let coverHref = await assets.getHref("app/ui/public/thriller.jpg", {
+  transform: [["resize", "400"], "webp"],
+});
+// "/assets/app/ui/public/thriller.jpg?transform=resize%3A400&transform=webp"
+```
+
+CSS 中手写 URL 使用相同查询语法，例如
+`url("./thriller.jpg?transform=resize:400&transform=webp")`。
+
+任何人都能通过修改 URL 请求任意转换链，因此要像 `resize` 一样校验参数并限制范围。
+`files.maxRequestTransforms` 限制链长度，默认 `5`。要对某类文件统一处理（如优化所有 SVG），
+使用 `files.globalTransforms`。全局转换在请求转换之后运行，返回 `null` 可跳过文件。
+
+除非配置 `files.cache`，转换文件每次请求都会重算。`createFsFileCache()`
+把它们存到磁盘 `node_modules/.cache/remix/assets`，带大小与条目限制。
+把 `files.cacheKey` 设为每次部署都会变化的值（如 commit SHA），让缓存跨重启复用但不跨代码变化。
+图片转换通常依赖 Sharp 这样的第三方库，需用 `npm i sharp` 单独安装。
+
+## 监视变化
+
+开发时有两种获取变化的方式，在简单与速度之间取舍：
+
+- **变化时重启。** 用 Node 的 `--watch` 运行服务器，并设置资源服务器 `watch` 选项，
+  让浏览器源码变化时重新编译。刷新页面查看更新，没有额外活动部件，但每次变化都丢失客户端状态。
+- **热模块替换。** 通过 `remix/node-hmr` 运行服务器，无需重启进程即可重载变化的服务端模块，
+  并启用资源服务器 `hmr` 选项让页面就地更新。更新更快并保留客户端状态，
+  代价是需要单独的 runner 进程和更多选项。
+
+对于 HMR，通过 `remix/node-hmr` 的 `run()` 启动服务器。它在子进程中运行 `server.ts` 并设置 `REMIX_NODE_HMR`：
+
+```ts filename=hmr.ts
+import { run } from "remix/node-hmr";
+
+run("server.ts", {
+  nodeArgs: ["--import", "remix/node-tsx", "--import", "remix/component-hmr/node"],
+});
+```
+
+```json filename=package.json
+{
+  "scripts": {
+    "hmr": "NODE_ENV=development node hmr.ts"
+  }
+}
+```
+
+设置 `REMIX_NODE_HMR` 时资源服务器选择启用：
+
+```ts filename=app/assets.ts
+import { createAssetServer } from "remix/assets";
+import { componentHmr } from "remix/component-hmr/assets";
+
+const isDevelopment = process.env.NODE_ENV === "development";
+const isHmr = Boolean(isDevelopment && process.env.REMIX_NODE_HMR);
+
+export const assets = createAssetServer({
+  // ...
+  watch: isDevelopment,
+  hmr: isHmr
+    ? {
+        channel: async () => (await import("remix/node-hmr/runtime")).createBrowserHmrChannel(),
+        moduleImporter: "remix/multiple-import-maps-polyfill",
+      }
+    : undefined,
+  scripts: { loaders: isHmr ? [componentHmr()] : undefined },
+});
+```
+
+`remix/node-hmr/runtime` 的 `createBrowserHmrChannel()` 把资源服务器连接到浏览器。
+`remix/component-hmr/assets` 的 `componentHmr()` 是脚本加载器，
+让水合的 Remix 组件就地换入新代码，只在组件设置代码变化时重新挂载。
+
+服务端渲染组件也会更新。服务端代码变化时，浏览器入口可以监听 `server:update` 事件并重载顶层 frame，
+从服务器获取新 HTML 并协调进页面：
+
+```ts filename=app/actions/public/entry.ts
+// app 是 run() 返回的值
+if (import.meta.hot) {
+  import.meta.hot.on("server:update", async () => {
+    await app.ready();
+    await app.frames.top.reload();
+  });
+}
+```
+
+你自己的浏览器模块可以使用相同的 `import.meta.hot` API：`accept()` 标记模块可以替换自己，
+`dispose()` 在旧版本丢弃前清理，`invalidate()` 在无法应用更新时放弃并重载：
+
+```ts filename=app/ui/public/now-playing.ts
+let timer = setInterval(updateProgress, 1000);
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => clearInterval(timer));
+  import.meta.hot.accept();
+}
+```
+
+把 `remix/assets/types/hmr` 加入 `tsconfig.json` 的 `types` 以类型化 `import.meta.hot`。
+直接写 `import.meta.hot.accept(...)` 调用，不要通过别名，因为资源服务器通过阅读源码找到它们。
+
+## 生产资源设置
+
+开发与生产需要不同的资源服务器设置：
+
+```ts filename=app/assets.ts
+const nodeEnv = process.env.NODE_ENV ?? "development";
+const isDevelopment = nodeEnv === "development";
+const isProduction = nodeEnv === "production";
+
+export const assets = createAssetServer({
+  // ...
+  sourceMaps: isDevelopment ? "external" : undefined,
+  minify: !isDevelopment,
+  fingerprint: isProduction,
+  watch: isDevelopment,
+});
+```
+
+生产关闭监视、压缩脚本并启用指纹。
+
+没有指纹时，资源以稳定 URL 提供，带 ETag 与 `Cache-Control: no-cache`。
+这正确，但重复访问仍会为每个模块发送一次重新验证请求并收到 `304`。
+启用 `fingerprint: true` 后，每个资源 URL 包含内容哈希（如
+`/assets/app/ui/public/cart.@k3x9f2.ts`），并以
+`Cache-Control: public, max-age=31536000, immutable` 提供。重复访问从未变化的模块从浏览器缓存加载，
+不触网。指纹从磁盘文件计算，因此需要 `watch: false`。
+
+指纹之所以保持细粒度，是因为 import map。用打包器时，文件哈希会写进每个导入它的文件，
+修改一个共享模块会改变其上所有文件的哈希并让应用大部分缓存失效。
+这里脚本继续导入稳定 URL，import map 把每个稳定 URL 指向当前指纹：
+
+```json
+{
+  "imports": {
+    "/assets/app/ui/public/cart.ts": "/assets/app/ui/public/cart.@k3x9f2.ts"
+  }
+}
+```
+
+修改 `cart.ts` 只改变一个 import map 条目和一次下载；导入它的模块保持 URL 和缓存。
+样式表没有 import map，因此被 `@import` 的样式表变化会改变导入它的样式表指纹。
+
+资源服务器只提供当前指纹。部署前渲染的页面可能请求已不存在的指纹。
+保留 immutable 响应的 CDN 有帮助，但 CDN 从未缓存的模块仍会到达新服务器并得到 `404`，
+因此预计部署后打开的页面需要刷新。
+
+生产中还有几个值得设置的选项：
+
+```ts filename=app/assets.ts
+export const assets = createAssetServer({
+  // ...
+  target: { chrome: "109", firefox: "115", safari: "16" },
+  scripts: {
+    define: { "process.env.NODE_ENV": JSON.stringify(nodeEnv) },
+  },
+  onError(error) {
+    console.error("Asset compilation failed", error);
+    return new Response("Internal Server Error", { status: 500 });
+  },
+});
+```
+
+- `target` 为支持的浏览器降级现代语法，接受 `chrome`、`firefox`、`safari`、`edge`、
+  `opera`、`ios`、`samsung` 与 `es`。
+- `sourceMaps` 可以是 `"external"` 或 `"inline"`。生产启用便于调试，但任何人都能下载原始源码，
+  需权衡。
+- `scripts.define` 用常量表达式替换全局标识符。值作为代码插入，因此字符串需要自带引号。
+- `onError` 接收意外编译失败。报告到错误追踪器并返回响应，或不返回以使用默认 `500`。
+
+关闭时在 HTTP 服务器关闭后调用 `assets.close()`，避免监视中的资源服务器让进程保持存活：
+
+```ts filename=server.ts
+server.close(() => assets.close().finally(() => process.exit(0)));
+```
+
+启动服务器前没有构建步骤。每个资源首次请求时编译并保存在内存中。
+其余响应需要自己的[缓存策略](/docs/production)与[压缩](/docs/production)设置。
+
+## 接受文件上传
+
+HTML 表单使用 `encType="multipart/form-data"` 并包含文件输入时会上传文件：
+
+```tsx filename=app/actions/albums/edit-cover/page.tsx
+<form
+  action={routes.albums.editCover.action.href({ albumId: album.id })}
+  method="post"
+  encType="multipart/form-data"
+>
+  <label>
+    Cover image
+    <input type="file" name="cover" accept="image/png, image/jpeg" required />
+  </label>
+  <button type="submit">Upload cover</button>
+</form>
+```
+
+`accept` 过滤浏览器文件选择器，是给用户的便利而不是校验，因为任何客户端都能发送任何文件。
+
+在服务端，`formData()` 解析 multipart 请求体。没有选项时，它把每个上传文件作为 `File`
+保存在 `context.formData` 的内存中。传 `uploadHandler` 在解析时检查每个文件，
+它返回放入表单的值，或不返回以省略文件：
+
+```ts filename=app/actions/albums/edit-cover/upload.ts
+import type { FileUpload } from "remix/form-data-parser";
+
+export class InvalidCoverError extends Error {}
+
+const signatures = [
+  { type: "image/png", bytes: [0x89, 0x50, 0x4e, 0x47] },
+  { type: "image/jpeg", bytes: [0xff, 0xd8, 0xff] },
+];
+
+export async function uploadCover(upload: FileUpload) {
+  if (upload.fieldName !== "cover" || upload.name === "") return;
+
+  let head = new Uint8Array(await upload.slice(0, 4).arrayBuffer());
+  let match = signatures.find((signature) =>
+    signature.bytes.every((byte, index) => head[index] === byte),
+  );
+
+  if (match === undefined) {
+    throw new InvalidCoverError("Cover images must be PNG or JPEG files");
+  }
+
+  return new File([upload], upload.name, { type: match.type });
+}
+```
+
+这个处理器：
+
+- 忽略不期望的字段和空文件输入。不返回会让字段从表单中省略。
+- 检查文件前几个字节，而不是相信提交的 `type` 或扩展名，并用检测到的媒体类型返回文件。
+
+把 `formData()` 放在接受上传的 action 上而不是整个路由器上，
+使用[action 中间件](/docs/routing-and-controllers)，让其他请求跳过 multipart 解析：
+
+```tsx filename=app/actions/albums/edit-cover/controller.tsx
+import { formData } from "remix/middleware/form-data";
+import { createController } from "remix/router";
+
+import { routes } from "../../../routes.ts";
+import { uploadCover } from "./upload.ts";
+import { uploadErrors } from "./upload-errors.ts";
+
+export default createController(routes.albums.editCover, {
+  actions: {
+    index(context) {
+      // 渲染上传表单
+    },
+    action: {
+      middleware: [
+        uploadErrors,
+        formData({
+          uploadHandler: uploadCover,
+          maxFiles: 1,
+          maxFileSize: 5 * 1024 * 1024,
+        }),
+      ],
+      async handler(context) {
+        // 校验 context.formData 并存储封面
+      },
+    },
+  },
+});
+```
+
+### 限制上传大小
+
+解析器在读取请求体时执行限制，因此超大请求在完全读完前就失败：
+
+| 选项            | 默认值                              | 限制                         |
+| --------------- | ----------------------------------- | ---------------------------- |
+| `maxFileSize`   | 2 MiB                               | 每个文件的大小               |
+| `maxFiles`      | 20                                  | 文件数量                     |
+| `maxParts`      | 1000                                | 字段与文件总数               |
+| `maxTotalSize`  | `maxFiles * maxFileSize` 加 1 MiB   | 整个请求体大小               |
+| `maxHeaderSize` | 8 KiB                               | multipart 请求体每部分的头部 |
+
+`maxFileSize` 默认 2 MiB 低于大多数照片，因此为每个上传 action 设置它。
+
+稳定解析器在调用 `uploadHandler` 前把每个文件读入内存，因此 `maxFileSize`
+也限制单个文件能占用的内存。
+
+超过限制时，`formData()` 抛出 `remix/form-data-parser` 中的错误类。
+放在它之前的中间件可以把这些错误变成响应：
+
+```ts filename=app/actions/albums/edit-cover/upload-errors.ts
+import {
+  MaxFileSizeExceededError,
+  MaxFilesExceededError,
+  MaxPartsExceededError,
+  MaxTotalSizeExceededError,
+} from "remix/form-data-parser";
+import type { Middleware } from "remix/router";
+
+import { InvalidCoverError } from "./upload.ts";
+
+export const uploadErrors: Middleware = async (context, next) => {
+  try {
+    return await next();
+  } catch (error) {
+    if (error instanceof MaxFileSizeExceededError || error instanceof MaxTotalSizeExceededError) {
+      return new Response("Cover images must be 5 MB or smaller", { status: 413 });
+    }
+
+    if (error instanceof MaxFilesExceededError || error instanceof MaxPartsExceededError) {
+      return new Response("Upload one cover image", { status: 400 });
+    }
+
+    if (error instanceof InvalidCoverError) {
+      return new Response(error.message, { status: 415 });
+    }
+
+    throw error;
+  }
+};
+```
+
+你的 `uploadHandler` 抛出的错误（如 `InvalidCoverError`）会原样到达该中间件，
+其他错误重新抛出，交给路由器正常错误处理。真实表单中通常
+[带着错误重新渲染表单](/docs/forms-and-mutations)，而不是返回纯文本。
+
+### 流式处理大上传
+
+要接受不想全部放进内存的文件，尝试 `remix/middleware/form-data/future` 的 `formData()`。
+它接受相同选项，但每个上传会从请求体流式进入 `uploadHandler`：
+
+```ts
+import type { FileUpload } from "remix/form-data-parser/future";
+import { formData } from "remix/middleware/form-data/future";
+
+import { trackStorage } from "../../../storage.ts";
+
+async function uploadTrack(upload: FileUpload) {
+  let key = crypto.randomUUID();
+  await trackStorage.set(key, upload);
+  return key;
+}
+
+let parseTracks = formData({ uploadHandler: uploadTrack, maxFileSize: 500 * 1024 * 1024 });
+```
+
+配合支持流的存储后端（文件系统或 S3），大上传从请求直接进入存储而无需缓冲。
+future 版 `FileUpload` 只能在处理器内读取一次，不支持 `slice()`，
+因此存储后检查内容并删除失败文件。返回的 key 以字符串到达 action，
+客户端也可能把它作为普通文本字段发送，因此只接受本次请求存储的 key。
+future 入口尚不稳定，任何版本都可能变化。
+
+### 直接解析 multipart 与 tar 流
+
+`formData()` 覆盖 HTML 表单上传。对于其他 multipart 格式，或需要自己处理每个部分时，
+直接使用 `remix/multipart-parser`，保留其头部、部分和大小限制。
+要把上传的 tar 归档作为流读取，使用 `remix/tar-parser`。
+
+## 校验上传
+
+上传处理器在请求体解析期间运行，意味着每个文件在 action 运行前、表单后续字段读取前就被存储。
+围绕这个顺序规划校验：
+
+- **在解析前拒绝未授权请求。** 把认证（如 `remix/middleware/auth` 的 `requireAuth()`）
+  和用户可编辑此专辑的检查放在 `formData()` 之前的中间件中。
+  `remix/middleware/cop` 在跨源表单 POST 到达解析器前拒绝它们。否则任何人都能填满你的存储。
+- **在校验后于 action 中存储文件。** 用 `remix/data-schema/form-data` 的 `f.file()` 校验文件，
+  再用服务器生成的 key 存储它。如果处理器存储文件并返回 key，客户端可以把任意 key
+  作为普通文本字段发送，action 无法区分。
+- **把提交的名称与类型视为不可信。** 绝不要把文件名当作路径或拼到目录上，
+  也不要从它推导存储扩展名或媒体类型。
+- **后续失败后清理。** 如果文件存储后保存失败，删除它。
+
+封面上传处理器把这些规则放在一起：
+
+```tsx filename=app/actions/albums/edit-cover/controller.tsx
+import * as s from "remix/data-schema";
+import * as f from "remix/data-schema/form-data";
+import { requireAuth } from "remix/middleware/auth";
+import { formData } from "remix/middleware/form-data";
+import { redirect } from "remix/response/redirect";
+import { createController } from "remix/router";
+
+import { routes } from "../../../routes.ts";
+import { coverStorage } from "../../../storage.ts";
+import { updateAlbum } from "../data.ts";
+import { requireAlbumEditor } from "../permissions.ts";
+import { uploadCover } from "./upload.ts";
+import { uploadErrors } from "./upload-errors.ts";
+
+const coverForm = f.object({
+  cover: f.file(s.instanceof_(File)),
+});
+
+export default createController(routes.albums.editCover, {
+  middleware: [requireAuth(), requireAlbumEditor()],
+  actions: {
+    index(context) {
+      // 渲染上传表单
+    },
+    action: {
+      middleware: [
+        uploadErrors,
+        formData({ uploadHandler: uploadCover, maxFiles: 1, maxFileSize: 5 * 1024 * 1024 }),
+      ],
+      async handler({ formData, params }) {
+        let result = s.parseSafe(coverForm, formData);
+
+        if (!result.success) {
+          return new Response("Choose a cover image", { status: 400 });
+        }
+
+        let coverKey = crypto.randomUUID();
+        await coverStorage.set(coverKey, result.value.cover);
+
+        let album = await updateAlbum(params.albumId, { coverKey });
+
+        if (album === undefined) {
+          await coverStorage.remove(coverKey);
+          return new Response("Album not found", { status: 404 });
+        }
+
+        return redirect(routes.albums.show.href({ albumId: album.id }), 303);
+      },
+    },
+  },
+});
+```
+
+`requireAuth()` 需要[路由器中间件中更早的 `auth()`](/docs/auth-sessions-security)。
+`requireAlbumEditor()` 代表你自己的中间件，检查已登录用户可编辑 `params.albumId`。
+当专辑已有封面时，保存新封面后移除旧 key，避免替换文件堆积。
+
+## 存储文件
+
+`remix/file-storage` 定义一个 `FileStorage` 接口，用字符串键保存 `File` 对象，后端可互换：
+
+```ts filename=app/storage.ts
+import { createFsFileStorage } from "remix/file-storage/fs";
+
+export const coverStorage = createFsFileStorage("./storage/covers");
+```
+
+该接口像文件的 `Map`：
+
+- `set(key, file)` 存储文件，`get(key)` 返回文件或 `null`。存储的文件保留
+  `name`、`type`、`size` 和 `lastModified`。
+- `has(key)` 检查键，`remove(key)` 删除。
+- `list({ prefix, limit, cursor, includeMetadata })` 分页列出键，可选带文件元数据。
+- `put(key, file)` 存储文件并返回由存储支撑的新文件。
+
+按应用运行位置选择后端：
+
+- `remix/file-storage/memory` 把文件保存在进程中，用于[隔离上传测试](/docs/testing)。
+- `remix/file-storage/fs` 写入单台服务器的目录。给它一个专用目录。
+  `get()` 返回的文件是惰性的，从磁盘流式读取而不是载入内存。
+- `remix/file-storage/s3` 存储到 AWS S3 或兼容服务。应用运行在多台服务器时使用它，
+  因为[每个副本需要相同存储](/docs/production)。
+
+由于每个后端实现同一接口，上传 action 和文件路由在更换后端时无需改变。
+
+### 在 S3 中存储文件
+
+```ts filename=app/storage.ts
+import { createS3FileStorage } from "remix/file-storage/s3";
+
+export const coverStorage = createS3FileStorage({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  bucket: "album-covers",
+  region: "us-east-1",
+});
+```
+
+`set()` 把文件流式传到 S3，大于一个分片的文件使用 multipart 上传，因此大文件无需全部放进内存。
+`put()` 使用相同上传但为返回文件而把整个文件放在内存，因此大文件优先 `set()`。
+对于 MinIO、LocalStack 等兼容服务，设置 `endpoint` 与 `forcePathStyle: true`。
+
+失败的上传会被中止，避免 S3 保留分片；但上传中途退出的进程无法中止。
+添加 bucket 生命周期规则删除未完成的 multipart 上传。
+
+## 发送存储文件与磁盘文件
+
+`remix/response/file` 的 `createFileResponse()` 把任何 `File` 变成带 HTTP 文件语义的响应：
+从文件 `type` 得到 `Content-Type`、`Content-Length`、ETag、`Last-Modified`、
+条件请求、`HEAD` 与字节范围。无论文件来自存储还是磁盘都一样。
+默认只对不可压缩的媒体类型启用范围，因此 `remix/middleware/compression`
+仍可压缩文本，而视频与音频支持拖动。
+
+### 提供上传文件
+
+存储文件通过你自己的路由提供。`staticFiles()` 无法提供存储目录，
+因为文件系统后端用哈希名而不是 key 存储文件。这个路由也是检查谁可以查看文件的地方：
+
+```tsx filename=app/actions/albums/controller.tsx
+import { createFileResponse } from "remix/response/file";
+import { createController } from "remix/router";
+
+import { routes } from "../../routes.ts";
+import { coverStorage } from "../../storage.ts";
+import { getAlbum } from "./data.ts";
+
+export default createController(routes.albums, {
+  actions: {
+    async cover({ params, request }) {
+      let album = await getAlbum(params.albumId);
+      let file = album?.coverKey ? await coverStorage.get(album.coverKey) : null;
+
+      if (file == null) {
+        return new Response("Cover not found", { status: 404 });
+      }
+
+      return createFileResponse(file, request, { cacheControl: "no-cache" });
+    },
+    // ...
+  },
+});
+```
+
+封面 URL `/albums/thriller/cover` 在上传新封面后保持不变，因此 `no-cache`
+让浏览器用 ETag 重新验证。如果 URL 包含存储 key，就可以按 immutable 缓存。
+对于只有已登录用户可见的文件使用 `private`，避免共享缓存存储它们。
+
+上传文件以存储时的类型提供，并带 `X-Content-Type-Options: nosniff`。
+这不能阻止浏览器渲染声明为 HTML 或 SVG 的文件，两者都能在你的源上运行脚本。
+要么像封面处理器那样校验内容并只允许安全类型，要么用
+`Content-Disposition: attachment` 把上传作为下载发送。
+
+### 从磁盘发送文件
+
+对于服务器文件系统上的文件，用 `remix/fs` 的 `openLazyFile()` 打开。
+文件惰性读取并流式进入响应：
+
+```ts filename=app/actions/albums/controller.tsx
+import { openLazyFile } from "remix/fs";
+import { ContentDisposition } from "remix/headers";
+import { createFileResponse } from "remix/response/file";
+
+// 在 action 内：
+let file = openLazyFile("./downloads/thriller-liner-notes.pdf");
+let response = await createFileResponse(file, request);
+
+response.headers.set(
+  "Content-Disposition",
+  new ContentDisposition({ type: "attachment", filename: "Thriller liner notes.pdf" }).toString(),
+);
+
+return response;
+```
+
+`openLazyFile()` 从扩展名检测媒体类型。对于不认识的扩展名，用 `remix/mime`
+的 `defineMimeType()` 注册。`remix/headers` 的 `ContentDisposition` 构建头部值。
+对于非纯 ASCII 文件名，在 ASCII `filename` 旁传入 RFC 8187 编码的 `filenameSplat`。
+
+避免先把大文件读入原生 `File` 或 `ArrayBuffer`。惰性文件会流式传输，
+无论文件多大内存占用都保持平稳。文件系统存储返回惰性文件，而 S3 存储的 `get()` 会把整个对象读入内存。

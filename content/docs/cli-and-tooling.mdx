@@ -1,0 +1,373 @@
+---
+title: CLI 与工具链
+description: 创建、检查、测试、类型检查并运行 TypeScript 项目的 Remix 命令行工作流。
+icon: Terminal
+---
+
+安装的 `remix` 包提供 CLI 以及应用使用的运行时子路径。本章覆盖 Remix 3 的命令、
+`remix.json` 配置、TypeScript 与 JSX 设置，以及在 Node 中直接运行源码。
+
+## 命令一览
+
+```sh
+remix new my-remix-app
+remix assets
+remix assets inspect /assets/app/actions/public/entry.ts
+remix completion bash >> ~/.bashrc
+remix doctor
+remix doctor --fix
+remix db migrate
+remix db rollback
+remix db status
+remix db reset --force
+remix routes
+remix routes --table
+remix routes --table --no-headers
+remix test
+remix version
+remix --no-color doctor
+```
+
+| 命令                | 作用                                                     |
+| ------------------- | -------------------------------------------------------- |
+| `new <dir>`         | 脚手架创建新项目                                         |
+| `routes`            | 打印路由树、方法、模式与 action 拥有者                   |
+| `doctor`            | 检查环境、项目设置与 action/控制器约定                   |
+| `doctor --fix`      | 应用低风险修复                                           |
+| `db ...`            | 迁移、回滚、状态、重置、种子                             |
+| `test`              | 运行 server / browser / e2e 测试                         |
+| `assets`            | 列出浏览器可达文件与 URL 映射                            |
+| `completion bash\|zsh` | 输出 shell 补全脚本                                   |
+| `version`           | 打印当前 Remix 版本                                      |
+| `help`              | 命令帮助                                                 |
+
+全局 `--no-color` 关闭 ANSI 样式，`--config <file>` 选择另一个 JSONC 配置文件。
+
+## 用 remix new 创建应用
+
+在本地安装包之前使用 `npx remix new <target-dir>`，安装之后使用 `remix new <target-dir>`：
+
+```sh
+npx remix new my-remix-app
+```
+
+它会生成与 Remix 项目布局一致的应用：`server.ts`、`app/routes.ts`、`app/router.ts`、
+`app/actions/`、`app/ui/`、`app/assets.ts`、根 `public/`，以及匹配的 `package.json` 脚本。
+Windows 上新应用会带上 `cross-env` 来设置 `NODE_ENV`；macOS/Linux 使用 shell 环境变量赋值。
+
+`--app-name` 覆盖生成的应用名，`--force` 允许写入非空目录（会覆盖冲突文件，使用前先确认）。
+
+## 用 remix routes 检查路由归属
+
+`remix routes` 加载 `app/routes.ts`，显示每个方法、模式与预期的 action 拥有者：
+
+```sh
+remix routes
+remix routes --table
+remix routes --table --no-headers
+remix routes --json
+```
+
+- `--table`：表格输出，便于快速核对
+- `--no-headers`：省略表头，便于脚本处理
+- `--verbose`：显示更多细节
+- `--json`：机器可读输出
+
+控制器文件缺失时会出现 `[missing]` 标记。这是路由映射与文件树不一致的最早信号，
+应在启动前修正。
+
+## 用 remix doctor 检查项目
+
+`remix doctor` 按依赖顺序检查环境、项目设置以及 action/控制器约定：
+
+```sh
+remix doctor
+remix doctor --json
+remix doctor --strict
+```
+
+- `--json`：机器可读的发现列表
+- `--strict`：警告也产生非零退出码，适合 CI
+
+`remix doctor --no-strict` 可以临时关闭 `remix.json` 中配置的严格模式。
+
+## 用 remix doctor --fix 应用低风险修复
+
+`--fix` 可能对齐项目元数据，或创建缺失的 action/控制器文件与占位符。
+它不会重写任意的应用逻辑：
+
+```sh
+remix doctor --fix
+git diff   # 审查产生的变更
+```
+
+先看正常输出中的修复计划，再检查工作区 diff，然后决定是否保留。
+
+## 数据库命令
+
+`remix db` 需要 `remix.json` 中的 `db.adapter` 配置：
+
+```sh
+remix db migrate
+remix db status
+remix db rollback                 # 回滚最近一次迁移
+remix db rollback --dry-run       # 只报告将回滚什么
+remix db rollback --step 2
+remix db rollback --to 0003_create_tracks
+remix db seed
+remix db reset --force
+```
+
+`remix db wipe` 与 `remix db reset` 是破坏性命令，没有 `--force` 会拒绝执行。
+`--migrations`、`--seed`、`--journal-table`、`--connection-env` 可以覆盖单次调用的配置。
+
+## 用 remix test 运行测试
+
+```sh
+remix test
+remix test frame
+remix test --type server
+remix test --type browser --project chromium
+```
+
+按部分名称选择文件：`remix test frame` 展开为 `**/*frame*.test*.{ts,tsx}`；
+文件路径与显式 glob 原样传递；多个参数取匹配文件的并集。
+完整的发现、覆盖率、浏览器与端到端配置见[测试章节](/docs/testing)。
+
+## 资源与补全
+
+```sh
+remix assets
+remix assets inspect /assets/app/actions/public/entry.ts
+```
+
+`remix assets` 以 `URL -> file` 每行列出浏览器可达资源；
+`remix assets inspect <url-or-file>` 显示单个映射，以及它是
+`reachable`、`denied`、`unsupported`、`missing` 还是 `unmapped`，被拒绝时还会显示匹配规则。
+
+```sh
+remix completion bash >> ~/.bashrc
+remix completion zsh >> ~/.zshrc
+```
+
+## remix.json 配置
+
+CLI 读取可选的 `remix.json`，按 JSONC 解析（允许注释与尾随逗号）。
+每个顶层字段都是可选的：
+
+```jsonc filename=remix.json
+{
+  "$schema": "./node_modules/remix/schema/remix.json",
+
+  "assets": {
+    "rootDir": ".",
+    "basePath": "/assets",
+    "mounts": { "app": "app", "npm": "node_modules" },
+    "allowFiles": ["app/routes.ts", "app/**/public/**"],
+    "allowPackages": ["remix"],
+    "denyFiles": ["app/**/*.test.*"],
+    "files": { "extensions": [".svg", ".png", ".jpg", ".woff2"] }
+  },
+
+  "db": {
+    "adapter": {
+      "type": "sqlite",
+      "filename": { "env": "DATABASE_URL", "default": "./db/app.sqlite" },
+      "foreignKeys": true,
+      "busyTimeout": 5000
+    },
+    "migrations": {
+      "directory": "./db/migrations",
+      "journalTable": "data_table_migrations"
+    },
+    "seed": "./db/seed.sql"
+  },
+
+  "doctor": { "strict": true },
+
+  "test": {
+    "files": ["**/*.test{,.browser,.e2e}.{ts,tsx}"],
+    "browserFiles": ["**/*.test.browser.{ts,tsx}"],
+    "e2eFiles": ["**/*.test.e2e.{ts,tsx}"],
+    "exclude": ["node_modules/**", "dist/**"],
+    "type": ["server", "browser", "e2e"],
+    "only": ["/checkout/i"],
+    "concurrency": 4,
+    "pool": "forks",
+    "setup": "./test/setup.ts",
+    "watch": false,
+    "playwright": {
+      "echo": false,
+      "open": false,
+      "configFile": "./playwright.config.ts",
+      "projects": ["chromium", "firefox"]
+    },
+    "reporter": "spec",
+    "quiet": false,
+    "coverage": {
+      "enabled": true,
+      "dir": ".coverage",
+      "include": ["app/**"],
+      "exclude": ["**/*.test.*"],
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
+    }
+  }
+}
+```
+
+本地 `$schema` 指向直接安装的 `remix` 包中的 schema，因此编辑器校验与版本匹配且可离线使用。
+显式命令行标志与位置参数覆盖配置值；重复标志替换配置数组，嵌套的 Playwright 与覆盖率设置按字段合并。
+相对路径与 glob 从配置文件所在目录解析。
+
+缺少默认 `remix.json` 会被忽略；显式选择的文件缺失、JSONC 格式错误、未知属性或非法值都会报 CLI 错误。
+
+应用代码可以读取完整的校验后配置：
+
+```ts
+import { createAssetServer } from "remix/assets";
+import { loadConfig } from "remix/cli";
+
+let config = await loadConfig(import.meta.dirname);
+if (config.assets === undefined) throw new Error("Missing assets configuration");
+
+let assetServer = createAssetServer({
+  ...config.assets,
+  sourceMaps: process.env.NODE_ENV === "development" ? "external" : undefined,
+});
+```
+
+传入配置文件路径则直接加载它，传入目录则向上搜索最近的 `remix.json`。
+资源路径相对于配置文件解析，因此 `config.assets` 可以直接展开进 `createAssetServer()`。
+转换、缓存、HMR、错误处理器等仅运行时选项在应用代码中追加。
+
+## TypeScript 与 JSX 设置
+
+`node --import remix/node-tsx` 直接执行 TypeScript 与 JSX，但导入解析仍遵循 Node。
+因此类型检查配置应匹配原生 Node 加载：
+
+```json filename=tsconfig.json
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "remix/component",
+    "strict": true,
+    "noEmit": true
+  }
+}
+```
+
+- `module` / `moduleResolution` 使用 `NodeNext`，让 TypeScript 像 Node 一样解析模块。
+- `allowImportingTsExtensions` 允许源码直接导入 `.ts` / `.tsx`。
+- `isolatedModules` 避免需要全程序编译的模式，例如不带 `export type` 重新导出类型。
+- `verbatimModuleSyntax` 要求显式标记仅类型导入与导出。
+- `rewriteRelativeImportExtensions` 为 `tsc` 输出保留路径改写能力。
+- `jsxImportSource` 指向 `remix/component`，让 JSX 使用 Remix 的运行时。
+
+把 `tsc --noEmit` 保留为独立类型检查：运行时转换不是类型检查。
+在 CI 中同时运行 `npm test` 与 `npm run typecheck`。
+
+## 用 remix/node-tsx 运行源文件
+
+```sh
+node --import remix/node-tsx ./server.ts
+```
+
+`node-tsx` 在执行前转换 `.ts`、`.tsx`、`.jsx`，包括需要生成 JavaScript 的 TypeScript 语法
+（enum、运行时 namespace、参数属性）。JSX 编译选项从每个文件最近的 `tsconfig.json` 读取。
+
+明确其限制：加载器**不**做类型检查、不改变 Node 模块解析、不应用 TypeScript 路径别名，
+也不会为旧运行时降级 JavaScript。不要启用 `erasableSyntaxOnly`，否则 TypeScript 会拒绝
+`node-tsx` 能执行的转换型语法。
+
+以编程方式使用：
+
+```ts
+// 注册加载器
+import "remix/node-tsx";
+
+// 或加载一个带限定 JSX 支持的模块
+import { loadModule } from "remix/node-tsx/load-module";
+
+let mod = await loadModule("./app/server.tsx", import.meta.url);
+```
+
+## 以编程方式调用 CLI
+
+当另一个工具需要相同的命令调度器与退出码时：
+
+```ts
+import { runRemix } from "remix/cli";
+
+await runRemix(["routes", "--json"]);
+let exitCode = await runRemix(["doctor", "--strict"]);
+```
+
+`runRemix()` 返回一个 promise，resolve 为 CLI 退出码。进程退出与输出所有权保留在调用方 CLI 中，
+因此你可以先设置环境、捕获输出或把结果嵌入更大的工具链。
+
+## 用终端工具构建项目 CLI
+
+`remix/terminal` 提供 ANSI 样式、颜色检测、光标控制与可注入流，避免手写转义序列：
+
+```ts
+import { createTerminal } from "remix/terminal";
+
+let terminal = createTerminal();
+
+terminal.writeLine(`${terminal.styles.green("ready")} listening on port 3000`);
+terminal.errorLine(terminal.styles.red("failed to start"));
+```
+
+只格式化时使用 `createStyles`：
+
+```ts
+import { createStyles } from "remix/terminal";
+
+let styles = createStyles({ colors: true });
+
+console.log(styles.bold(styles.cyan("Ready")));
+console.log(styles.format("warning", "dim", "yellow", "bgBlackBright"));
+console.log(styles.red(`Error: ${styles.bold("fatal")} retrying`));
+```
+
+颜色检测默认在 CI、存在 `NO_COLOR`、`TERM=dumb`、非 TTY 输出流时禁用；
+显式 `colors: true | false` 可覆盖。
+
+光标与行控制使用 `ansi`：
+
+```ts
+import { ansi } from "remix/terminal";
+
+process.stdout.write(ansi.clearLine);
+process.stdout.write(ansi.cursorTo(0));
+process.stdout.write("Updated status");
+```
+
+测试输出时注入流，不写真实控制台：
+
+```ts
+import { createTerminal } from "remix/terminal";
+
+let output = "";
+let terminal = createTerminal({
+  colors: false,
+  stdout: {
+    write(chunk) {
+      output += chunk;
+    },
+  },
+});
+
+terminal.writeLine(terminal.styles.green("ok"));
+```
+
+这是给应用工具用的库，不是额外的 Remix 构建系统。

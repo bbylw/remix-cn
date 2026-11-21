@@ -1,0 +1,504 @@
+---
+title: 数据与校验
+description: Remix 如何校验输入、定义关系数据、查询数据库并运行 SQL 迁移。
+icon: Database
+---
+
+Remix 使用 `remix/data-table` 处理持久化数据，使用 `remix/data-schema` 处理不可信输入。
+本章涵盖表定义、SQL 迁移、把数据库放到请求上下文、在 action 中读取行，
+以及解析表单与查询字符串值。后续部分涉及关系、表级校验钩子、事务，
+以及 PostgreSQL 或 MySQL。示例使用 SQLite 和唱片店的 albums、tracks 表。
+
+## 描述存储的行
+
+`remix/data-table` 的 `table()` 描述表名与列。Remix 用这些元数据进行类型化查询、
+列引用以及为数据库编码值。这个模块描述 albums 表和 tracks 表（其行属于某张专辑）：
+
+```ts filename=app/data/tables.ts
+import { column as c, table } from "remix/data-table";
+import type { TableRow } from "remix/data-table";
+
+export const albums = table({
+  name: "albums",
+  columns: {
+    id: c.text(),
+    title: c.text(),
+    artist: c.text(),
+    year: c.integer(),
+  },
+});
+
+export const tracks = table({
+  name: "tracks",
+  columns: {
+    id: c.text(),
+    album_id: c.text(),
+    title: c.text(),
+    position: c.integer(),
+  },
+});
+
+// 从列推导 Album 类型
+export type Album = TableRow<typeof albums>;
+```
+
+`id` 列是默认主键，但表可以用 `primaryKey` 指定其他键。
+
+`table(...)` **不会**创建 SQL 表。请用 [SQL 迁移](#create-the-tables-with-sql)创建表。
+
+## 用 SQL 创建表
+
+每个迁移有一个带编号的目录，其中包含 `up.sql` 文件；当变更可逆时，还包含 `down.sql` 文件：
+
+```txt
+db/migrations/
+└── 0001_create_albums/
+    ├── up.sql
+    └── down.sql
+```
+
+数字前缀决定迁移顺序。保持每个前缀宽度一致（`0001`、`0002` 等）。
+
+这个 SQLite 迁移创建 `albums` 与 `tracks` 表：
+
+```sql filename=db/migrations/0001_create_albums/up.sql
+create table albums (
+  id text primary key not null,
+  title text not null check (length(trim(title)) > 0),
+  artist text not null check (length(trim(artist)) > 0),
+  year integer not null check (year > 0)
+);
+
+create table tracks (
+  id text primary key not null,
+  album_id text not null references albums(id) on delete cascade,
+  title text not null,
+  position integer not null,
+  unique (album_id, position)
+);
+```
+
+外键与唯一约束是数据库执行的 SQL 规则，即使另一个应用写入这些表也依然生效。
+
+你可以在 `down.sql` 中按依赖顺序撤销变更：
+
+```sql filename=db/migrations/0001_create_albums/down.sql
+drop table tracks;
+drop table albums;
+```
+
+要应用迁移，用 `remix/data-table/sqlite` 打开数据库，用
+`remix/data-table/migrations/node` 加载迁移文件，再传给 `db.migrate(...)`：
+
+```ts filename=app/db.ts
+import { fileURLToPath } from "node:url";
+import { loadMigrations } from "remix/data-table/migrations/node";
+import { createSqliteDatabase } from "remix/data-table/sqlite";
+
+export const db = createSqliteDatabase({
+  filename: fileURLToPath(new URL("../albums.sqlite", import.meta.url)),
+  foreignKeys: true,
+});
+
+export async function migrateDatabase() {
+  let migrations = await loadMigrations(
+    fileURLToPath(new URL("../db/migrations/", import.meta.url)),
+  );
+  await db.migrate(migrations);
+}
+```
+
+`createSqliteDatabase(...)` 使用 Node.js 或 Bun 内置的 SQLite 客户端。
+SQLite 默认关闭外键约束，因此 `foreignKeys: true` 会打开它，
+数据库会拒绝专辑不存在的 track。文件路径相对于该模块，
+因此从其他目录启动服务器仍会引用正确的数据库文件。
+
+在单进程应用中，在 `server.ts` 里于 HTTP 服务器开始监听之前调用
+`await migrateDatabase()`，确保第一个请求之前所有迁移都已应用。
+在多个服务器进程的部署中，把这些进程接受请求之前，作为部署步骤运行一次迁移。
+应用[关闭](/docs/production)时调用 `await db.close()`。
+
+迁移运行器把每个已应用的迁移记录在 journal 中——默认是名为 `data_table_migrations`
+的数据库表。每行保存校验和，即迁移 SQL 文件的哈希。后续运行会重新计算校验和，
+如果已应用迁移的文件发生变化就抛出错误。模式变化时新增迁移，而不是编辑已应用的迁移，
+并让 `app/data/tables.ts` 中的表定义与最终 SQL 模式保持一致。
+
+`db.migrate(...)` 还支持 dry-run 计划、有界回滚和迁移目标。
+`remix db` 的 CLI 配置记录在 `remix/data-table` 包中。
+
+## 让 action 访问数据库
+
+数据库与应用同生命周期。控制器可以直接从 `app/db.ts` 导入 `db`，这是最简单的选择。
+另一种方式是中间件把它放到每个请求的上下文，控制器读取 `context.db`，无需导入连接模块：
+
+```ts filename=app/middleware/database.ts
+import { createContextKey } from "remix/router";
+import type { Database } from "remix/data-table";
+import type { Middleware } from "remix/router";
+
+import { db } from "../db.ts";
+
+export const databaseContext = createContextKey<Database>();
+
+export function loadDatabase(): Middleware<{
+  key: typeof databaseContext;
+  value: Database;
+  property: "db";
+}> {
+  return (context, next) => {
+    context.set(databaseContext, db, { property: "db" });
+    return next();
+  };
+}
+```
+
+`databaseContext` 与 `loadDatabase()` 都是应用代码。中间件从 `app/db.ts` 导入共享数据库，
+并把同一个实例存到每个请求的上下文。它不会每请求打开连接或启动事务。
+
+把它加入路由器的中间件列表：
+
+```ts filename=app/router.ts lines=[8,13]
+import { formData } from "remix/middleware/form-data";
+import { render } from "remix/middleware/render";
+import { staticFiles } from "remix/middleware/static";
+import { createRouter } from "remix/router";
+import type { RouterContext } from "remix/router";
+
+import { assets } from "./assets.ts";
+import { loadDatabase } from "./middleware/database.ts";
+
+export const router = createRouter({
+  middleware: [
+    staticFiles("./public", { index: false }),
+    loadDatabase(),
+    formData(),
+    render({ assets }),
+  ],
+});
+
+export type AppContext = RouterContext<typeof router>;
+
+declare module "remix" {
+  interface RouterTypes {
+    context: AppContext;
+  }
+}
+
+// router.map(...) 调用放在这里。
+```
+
+`RouterTypes` 声明让控制器以推导类型使用 `context.db`（以及 `context.formData`、`context.render`）。
+也可以通过 `context.get(databaseContext)` 访问数据库。
+
+## 读取专辑
+
+`db.create(...)` 插入一行，`db.find(...)` 按主键加载一行。项目根目录的种子脚本可以在迁移后插入专辑：
+
+```ts
+import { db } from "./app/db.ts";
+import { albums } from "./app/data/tables.ts";
+
+await db.create(albums, {
+  id: "thriller",
+  title: "Thriller",
+  artist: "Michael Jackson",
+  year: 1982,
+});
+```
+
+在 action 中通过 `context.db` 查找专辑，`find` 返回 `null` 时返回 `404`：
+
+```tsx filename=app/actions/albums/controller.tsx lines=[10]
+import { createController } from "remix/router";
+
+import { albums } from "../../data/tables.ts";
+import { routes } from "../../routes.ts";
+import { AlbumPage } from "./show-page.tsx";
+
+export default createController(routes.albums, {
+  actions: {
+    async show(context) {
+      let album = await context.db.find(albums, context.params.albumId);
+      if (album === null) return new Response("Album not found", { status: 404 });
+
+      return context.render(<AlbumPage album={album} />);
+    },
+  },
+});
+```
+
+对 `/albums/thriller` 的请求现在会从 SQLite 文件读取种子行，因此服务器重启后专辑仍然存在。
+
+## 定义输入模式
+
+表单字段以文本到达，即使 year 输入有 `type="number"`。
+用 `remix/data-schema/form-data` 构建的表单模式可以把 year 强制转换，
+把文本 `"1982"` 变成数字 `1982`，并拒绝空标题和艺术家。
+把它放在编辑控制器旁边，就与解析表单的 action 相邻：
+
+```ts filename=app/actions/albums/edit/schema.ts
+import * as s from "remix/data-schema";
+import * as checks from "remix/data-schema/checks";
+import * as coerce from "remix/data-schema/coerce";
+import * as f from "remix/data-schema/form-data";
+
+const albumText = s
+  .string()
+  // 先 trim 再应用长度检查，让纯空白值失败。
+  .transform((value) => value.trim())
+  .pipe(checks.minLength(1));
+
+const albumYear = coerce
+  // 接受有限数字或数字文本（"1982" → 1982），但拒绝空字符串。
+  .number()
+  // 检查正整年份，不改变数字本身。
+  .refine((value) => Number.isInteger(value) && value > 0, "Enter a positive whole year");
+
+export const albumForm = f.object({
+  title: f.field(albumText),
+  artist: f.field(albumText),
+  year: f.field(albumYear),
+});
+```
+
+`f.field(...)` 读取每个名称的第一个值、拒绝文件，并把缺失值作为 `undefined` 传给字段模式。
+`f.object(...)` 只选择声明的字段，因此提交中多出的 `id` 不会成为更新的一部分。
+
+解析普通对象或单个值、使用 `parse()` 在校验失败时抛出错误，以及其他模式选项，
+请参阅 `remix/data-schema` 概览。
+
+要在 action 中使用 `albumForm` 这样的模式，请[解析并保存提交的表单](/docs/forms-and-mutations)，
+然后[把校验失败连同表单返回](/docs/forms-and-mutations)，让用户可以修正。
+
+## 高级数据与校验
+
+### 解析查询字符串与重复字段
+
+`remix/data-schema/form-data` 中的模式辅助函数也接受
+[`URLSearchParams`](https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams)，
+即从 `context.url.searchParams` 得到的解析后查询字符串。
+例如，目录搜索可以读取查询、页码和多个已选流派：
+
+```ts filename=app/actions/albums/search-schema.ts
+import * as s from "remix/data-schema";
+import * as f from "remix/data-schema/form-data";
+import * as coerce from "remix/data-schema/coerce";
+
+export const albumSearch = f.object({
+  query: f.field(s.defaulted(s.string(), "")),
+  page: f.field(
+    s.defaulted(
+      coerce.number().refine((value) => Number.isInteger(value) && value > 0, "Invalid page"),
+      1,
+    ),
+  ),
+  genres: f.fields(s.array(s.string()), { name: "genre" }),
+});
+```
+
+在 action 中，`s.parseSafe(albumSearch, context.url.searchParams)` 会把
+`?genre=soul&genre=pop&page=2` 解析为 `{ query: "", page: 2, genres: ["soul", "pop"] }`。
+`f.fields(...)` 读取某个名称的所有值并把数组传给模式。缺失的重复字段变成空数组。
+
+浏览器表单编码会改变这些模式收到的内容：
+
+- 未勾选的 checkbox 不存在。对于 `value="yes"` 的 checkbox，
+  `s.optional(s.literal("yes")).transform((value) => value === "yes")` 产生布尔值。
+  `coerce.boolean()` 接受 `"true"` 与 `"false"`，而不是浏览器默认的 `"on"`。
+- 空文本输入是 `""` 而不是 `undefined`，因此 `optional()` 和 `defaulted()`
+  不会自动让空字符串有效。
+- 文件条目使用 `f.file(...)` 或 `f.files(...)`，并在模式看到它们之前
+  [带限制地解析 multipart 上传](/docs/files-and-assets)。
+
+### 组合查询并加载关系
+
+`query()` 在没有数据库连接的情况下构建查询。只需要每张专辑 ID、标题和年份的目录页，
+可以在模块中定义查询：
+
+```ts filename=app/data/catalog.ts
+import { query } from "remix/data-table";
+
+import { albums } from "./tables.ts";
+
+export const recentAlbums = query(albums)
+  .select({ id: albums.id, title: albums.title, year: albums.year })
+  .orderBy("year", "desc")
+  .limit(20);
+```
+
+`recentAlbums` 是一个查询值。直到 action 调用 `await context.db.exec(recentAlbums)` 才会运行 SQL。
+结果只包含选中的列。当你已经有数据库，想直接用 `.all()` 或 `.first()` 执行查询链时，
+使用 `db.query(albums)`。
+
+关系描述如何加载关联行。用 `hasMany(...)` 与 `belongsTo(...)` 定义，这里放在独立模块：
+
+```ts filename=app/data/relations.ts
+import { belongsTo, hasMany } from "remix/data-table";
+
+import { albums, tracks } from "./tables.ts";
+
+export const albumTracks = hasMany(albums, tracks, { foreignKey: "album_id" });
+export const trackAlbum = belongsTo(tracks, albums, { foreignKey: "album_id" });
+```
+
+按播放顺序加载专辑及其曲目：
+
+```ts
+import { db } from "./app/db.ts";
+import { albumTracks } from "./app/data/relations.ts";
+import { albums } from "./app/data/tables.ts";
+
+let album = await db.find(albums, "thriller", {
+  with: { tracks: albumTracks.orderBy("position", "asc") },
+});
+
+if (album !== null) {
+  for (let track of album.tracks) console.log(track.title);
+}
+```
+
+`with` 的键命名返回的属性，TypeScript 知道 `album.tracks` 是 track 行数组。
+`hasOne(...)` 描述单个关联行，`hasManyThrough(...)` 跟随中间表。
+这些描述符只影响查询；[SQL 迁移](#create-the-tables-with-sql)中的外键才是在数据库里强制关系的东西。
+
+查询对象还支持 join、聚合、嵌套关系加载与作用域写入。当用 SQL 表达更清晰时，
+使用 `sql` 模板标签参数化值：
+
+```ts
+import { sql } from "remix/data-table";
+
+// 在 action 内：
+let artist = context.url.searchParams.get("artist") ?? "";
+let result = await context.db.exec(sql`
+  select id, title from albums where artist = ${artist}
+`);
+```
+
+`${artist}` 成为绑定值，而不是 SQL 文本。表名、列名和 SQL 语法保留在应用代码中。
+原始 SQL 不会运行[表生命周期钩子](#enforce-rules-across-writes)，
+也不会从表定义推导结果形状。
+
+### 在写入时统一执行规则
+
+种子脚本或导入任务可能不解析浏览器表单就直接写入专辑。
+如果每次通过 `remix/data-table` 的写入都应拒绝空标题，请添加表级 `validate` 钩子：
+
+```ts filename=app/data/tables.ts
+import { column as c, fail, table } from "remix/data-table";
+import type { TableRow } from "remix/data-table";
+
+export const albums = table({
+  name: "albums",
+  columns: {
+    id: c.text(),
+    title: c.text(),
+    artist: c.text(),
+    year: c.integer(),
+  },
+  validate({ operation, value }) {
+    if (operation === "create" || value.title !== undefined) {
+      if (typeof value.title !== "string" || value.title.trim().length === 0) {
+        return fail("Title is required", ["title"]);
+      }
+    }
+
+    return { value };
+  },
+});
+
+export type Album = TableRow<typeof albums>;
+
+// tracks 表不变。
+```
+
+写入负载是部分对象。只修改 `year` 的更新没有 `title` 属性，
+因此这个钩子在创建时或更新提供了标题时检查标题。校验失败会以
+`DataTableValidationError` 拒绝写入。
+
+用请求模式处理某次操作的形状，包括解析字符串和选择调用者可以提交的字段；
+用表钩子处理应用所有表写入共享的规则；用 SQL 约束处理也必须对其他数据库客户端生效的规则。
+
+其他生命周期钩子在读取和写入前后运行：
+
+| 钩子           | 运行时机                                                     |
+| -------------- | ------------------------------------------------------------ |
+| `beforeWrite`  | 在 `validate` 之前，允许规范化写入负载。                     |
+| `afterWrite`   | 成功写入之后，带受影响行的元数据。                           |
+| `beforeDelete` | 删除之前，带谓词与作用域，可以拒绝操作。                     |
+| `afterDelete`  | 成功删除之后，带受影响行数。                                 |
+| `afterRead`    | 加载行时，包括关联行和写入返回的行。                         |
+
+钩子是同步的，不会开启事务。`afterRead` 钩子可能收到 `select(...)` 查询的投影
+（如 `{ id, title, year }`），因此在转换字段前必须检查它是否存在。
+`where`、`having` 或 join 条件中的谓词值不会经过表钩子校验。
+
+### 在事务中分组写入
+
+创建专辑及其第一首曲目需要两次写入。把它们放进 `db.transaction(...)`，
+这样曲目插入失败时也会撤销专辑插入：
+
+```ts
+import { db } from "./app/db.ts";
+import { albums, tracks } from "./app/data/tables.ts";
+
+await db.transaction(async (tx) => {
+  await tx.create(albums, {
+    id: "blue",
+    title: "Blue",
+    artist: "Joni Mitchell",
+    year: 1971,
+  });
+
+  await tx.create(tracks, {
+    id: "all-i-want",
+    album_id: "blue",
+    title: "All I Want",
+    position: 1,
+  });
+});
+```
+
+事务内的每个操作都使用回调的 `tx`。回调 resolve 提交写入；抛出错误或返回 rejected promise
+会回滚。返回错误 `Response` 仍算成功的回调返回，因此不会请求回滚。
+
+事务不会撤销数据库之外的工作，例如发送邮件或调用其他服务。
+把这部分工作放在回调之外，或在同一事务中记录待执行工作。
+
+### 使用 PostgreSQL 或 MySQL
+
+查询与表 API 也适用于 PostgreSQL 和 MySQL。把 SQLite 工厂替换为对应适配器，
+并用该 SQL 方言编写迁移。
+
+对于 PostgreSQL，用 `npm i pg` 安装 `pg`，并用 `remix/data-table/postgres`
+及其连接配置创建数据库：
+
+```ts filename=app/db.ts
+import { createPostgresDatabase } from "remix/data-table/postgres";
+
+export const db = createPostgresDatabase({
+  connectionString: process.env.DATABASE_URL,
+});
+```
+
+PostgreSQL 适配器支持事务选项，例如作为 `db.transaction(...)` 第二个参数传入
+`{ isolationLevel: "serializable" }`。
+
+对于 MySQL，用 `npm i mysql2` 安装 `mysql2`，并使用 `remix/data-table/mysql`：
+
+```ts filename=app/db.ts
+import { createMysqlDatabase } from "remix/data-table/mysql";
+
+export const db = createMysqlDatabase({
+  uri: process.env.DATABASE_URL,
+  multipleStatements: true,
+});
+```
+
+`multipleStatements: true` 允许迁移运行器把每个 SQL 文件作为一个脚本发送。
+MySQL 不支持 SQL `RETURNING` 子句（从 insert 或 update 返回写入行），
+因此请求它的查询操作（包括带 `{ returnRows: true }` 的批量插入）不可用。
+单行 CRUD 辅助函数可以用后续查询取回一行。MySQL 也不支持事务性 DDL，
+意味着 `create table` 等模式变更立即生效且无法回滚；失败的迁移可能需要修复后才能再次运行。
+
+从配置创建的数据库实例拥有连接池。应用关闭时用 `await db.close()` 关闭它。
+如果应用已经管理兼容客户端或连接池的生命周期，也可以传入现有实例。

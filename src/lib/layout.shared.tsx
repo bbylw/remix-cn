@@ -20,7 +20,6 @@ export function baseOptions(): BaseLayoutProps {
     links: [
       { type: 'main', text: '文档', url: '/docs' },
       { type: 'main', text: '入门指南', url: '/docs/start-here' },
-      { type: 'main', text: '官方文档', url: 'https://docs.remix.run', external: true },
     ],
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
   };

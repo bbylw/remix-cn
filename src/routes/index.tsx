@@ -545,10 +545,13 @@ export const router = createRouter({
 
         <footer className="border-t border-fd-border/70">
           <div className="landing-wrap flex flex-col items-center justify-between gap-4 py-8 text-xs text-fd-muted-foreground md:flex-row">
-            <div className="flex items-center gap-2">
-              <img src="/remix-logo.svg" alt="" className="size-4 dark:invert" width={16} height={16} />
-              <span>Remix 中文文档 · 与上游保持同步</span>
-            </div>
+            <img
+              src="/remix-logo.svg"
+              alt="Remix"
+              className="size-4 dark:invert"
+              width={16}
+              height={16}
+            />
             <div className="flex items-center gap-5">
               <a href="https://remix.run" target="_blank" rel="noreferrer" className="hover:text-fd-foreground">
                 remix.run

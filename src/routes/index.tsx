@@ -273,7 +273,7 @@ function Home() {
         </section>
 
         {/* Pipeline */}
-        <section className="border-y border-fd-border/70 bg-fd-card/30">
+        <section id="pipeline" className="scroll-mt-24 border-y border-fd-border/70 bg-fd-card/30">
           <div className="landing-wrap py-16 md:py-20">
             <div className="mb-10 max-w-2xl">
               <Eyebrow>请求即契约</Eyebrow>
@@ -363,7 +363,7 @@ export default createController(routes.albums, {
         </section>
 
         {/* Capabilities */}
-        <section id="capabilities" className="landing-wrap py-20 md:py-24">
+        <section id="capabilities" className="landing-wrap scroll-mt-24 py-20 md:py-24">
           <div className="mb-12 max-w-2xl">
             <Eyebrow>能力</Eyebrow>
             <h2 className="font-display text-3xl font-semibold md:text-4xl">
@@ -450,7 +450,7 @@ export const router = createRouter({
         </section>
 
         {/* Principles */}
-        <section className="landing-wrap py-20 md:py-24">
+        <section id="principles" className="landing-wrap scroll-mt-24 py-20 md:py-24">
           <div className="mb-12 max-w-2xl">
             <Eyebrow>设计原则</Eyebrow>
             <h2 className="font-display text-3xl font-semibold md:text-4xl">
@@ -474,7 +474,7 @@ export const router = createRouter({
         </section>
 
         {/* Packages */}
-        <section className="border-y border-fd-border/70 bg-fd-card/30">
+        <section id="packages" className="scroll-mt-24 border-y border-fd-border/70 bg-fd-card/30">
           <div className="landing-wrap py-20 md:py-24">
             <div className="grid gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
               <div>

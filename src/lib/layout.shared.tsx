@@ -18,6 +18,9 @@ export function baseOptions(): BaseLayoutProps {
       ),
     },
     links: [
+      { type: 'main', text: '能力', url: '/#capabilities' },
+      { type: 'main', text: '设计原则', url: '/#principles' },
+      { type: 'main', text: '生态', url: '/#packages' },
       { type: 'main', text: '文档', url: '/docs' },
       { type: 'main', text: '入门指南', url: '/docs/start-here' },
     ],

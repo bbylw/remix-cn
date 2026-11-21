@@ -3,6 +3,7 @@ import { HomeLayout } from 'fumadocs-ui/layouts/home';
 import { baseOptions } from '@/lib/layout.shared';
 import { CopyCommand } from '@/components/copy-command';
 import { CodeBlock } from '@/components/code-block';
+import { PageShellContainer } from '@/components/page-shell';
 import { cn } from '@/lib/cn';
 import {
   ArrowRight,
@@ -30,8 +31,8 @@ export const Route = createFileRoute('/')({
 
 function Eyebrow({ children }: { children: ReactNode }) {
   return (
-    <div className="font-mono-code mb-4 flex items-center gap-2.5 text-[11px] font-medium tracking-[0.16em] text-fd-primary uppercase">
-      <span className="h-px w-6 bg-fd-primary/60" />
+    <div className="font-mono-code mb-4 flex items-center gap-2.5 text-[0.6875rem] font-medium tracking-[0.16em] text-fd-primary uppercase">
+      <span className="h-px w-6 bg-fd-primary/60" aria-hidden="true" />
       {children}
     </div>
   );
@@ -49,10 +50,10 @@ function SectionHead({
   return (
     <div className="max-w-2xl">
       <Eyebrow>{eyebrow}</Eyebrow>
-      <h2 className="font-display text-[1.7rem] leading-snug font-semibold text-balance md:text-[2.05rem]">
+      <h2 className="font-display text-[clamp(1.55rem,1.35rem+0.9vw,2.05rem)] leading-snug font-semibold text-balance">
         {title}
       </h2>
-      <p className="mt-4 text-sm leading-7 text-(--lp-muted)">{lede}</p>
+      <p className="mt-4 text-sm leading-7 text-(--lp-muted) text-pretty">{lede}</p>
     </div>
   );
 }
@@ -266,10 +267,10 @@ const pad = (n: number) => String(n).padStart(2, '0');
 
 function Home() {
   return (
-    <HomeLayout {...baseOptions()}>
-      <main className="flex-1 overflow-hidden">
+    <HomeLayout {...baseOptions()} slots={{ container: PageShellContainer }}>
+      <main className="flex-1">
         {/* Hero */}
-        <section className="relative isolate">
+        <section className="relative isolate overflow-x-clip">
           <div className="hero-glow pointer-events-none absolute inset-0 -z-10" />
           <div className="hero-grid pointer-events-none absolute inset-0 -z-10" />
           <div className="landing-wrap flex flex-col items-center pt-16 pb-14 text-center md:pt-24 md:pb-16">
@@ -277,23 +278,30 @@ function Home() {
               href="https://github.com/remix-run/remix"
               target="_blank"
               rel="noreferrer"
-              className="group mb-7 inline-flex items-center gap-2 rounded-full border border-(--lp-line) bg-(--lp-surface)/80 py-1.5 pr-3 pl-1.5 text-xs text-(--lp-muted) backdrop-blur transition hover:border-fd-primary/40 hover:text-fd-foreground"
+              className="group lp-press mb-7 inline-flex min-h-(--target-size) items-center gap-2 rounded-full border border-(--lp-line-strong) bg-(--lp-surface)/85 py-1.5 pr-3 pl-1.5 text-xs text-(--lp-muted) backdrop-blur hover:border-fd-primary hover:text-fd-foreground active:brightness-95"
             >
-              <span className="font-mono-code rounded-full bg-fd-primary/12 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-fd-primary">
+              <span className="font-mono-code rounded-full bg-fd-primary/12 px-2 py-0.5 text-[0.6875rem] font-semibold tracking-wide text-fd-primary">
                 REMIX 3
               </span>
               在 Shopify 的生产应用中经受检验
-              <ArrowRight className="size-3.5 transition group-hover:translate-x-0.5" />
+              <ArrowRight
+                className="size-3.5 motion-safe:transition motion-safe:group-hover:translate-x-0.5"
+                aria-hidden="true"
+              />
             </a>
 
-            <h1 className="font-display max-w-3xl text-[2rem] leading-[1.2] font-semibold text-balance md:text-[3.2rem] md:leading-[1.16] lg:text-[3.7rem]">
+            <h1
+              id="lp-content"
+              tabIndex={-1}
+              className="font-display max-w-3xl text-[clamp(2rem,1.35rem+2.8vw,3.7rem)] leading-[1.18] font-semibold text-balance"
+            >
               一个框架，
               <br />
               从请求一直做到{' '}
               <span className="whitespace-nowrap text-fd-primary">整个应用</span>
             </h1>
 
-            <p className="mt-6 max-w-2xl text-[15px] leading-7 text-(--lp-muted) text-pretty md:text-base md:leading-8">
+            <p className="mt-6 max-w-2xl text-[0.9375rem] leading-7 text-(--lp-muted) text-pretty md:text-base md:leading-8">
               Remix 是用于构建 Web 应用的全栈 TypeScript 框架。类型化路由、中间件、服务端渲染、
               浏览器水合、数据校验、会话与资源编译全部内置，而它们连接的仍然是你熟悉的{' '}
               <code className="font-mono-code text-[0.9em] text-fd-foreground">Request</code> 与{' '}
@@ -306,14 +314,14 @@ function Home() {
                 <Link
                   to="/docs/$"
                   params={{ _splat: 'start-here' }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-fd-primary px-5 py-2.5 text-sm font-medium text-fd-primary-foreground transition hover:opacity-90"
+                  className="lp-press inline-flex min-h-(--target-size) items-center gap-2 rounded-lg bg-fd-primary px-5 py-2.5 text-sm font-medium text-fd-primary-foreground hover:opacity-90 active:brightness-95"
                 >
                   阅读中文文档
-                  <ArrowRight className="size-4" />
+                  <ArrowRight className="size-4" aria-hidden="true" />
                 </Link>
                 <a
                   href="#capabilities"
-                  className="inline-flex items-center gap-2 rounded-lg border border-(--lp-line) bg-(--lp-surface)/70 px-5 py-2.5 text-sm font-medium text-fd-foreground backdrop-blur transition hover:border-(--lp-line-strong)"
+                  className="lp-press inline-flex min-h-(--target-size) items-center gap-2 rounded-lg border border-(--lp-line-strong) bg-(--lp-surface)/85 px-5 py-2.5 text-sm font-medium text-fd-foreground backdrop-blur hover:bg-(--lp-surface-2) active:brightness-95"
                 >
                   看看能力
                 </a>
@@ -322,9 +330,9 @@ function Home() {
                   target="_blank"
                   rel="noreferrer"
                   aria-label="GitHub 仓库"
-                  className="grid size-10 place-items-center rounded-lg border border-(--lp-line) bg-(--lp-surface)/70 text-(--lp-muted) backdrop-blur transition hover:border-(--lp-line-strong) hover:text-fd-foreground"
+                  className="lp-press grid min-h-[max(2.5rem,var(--target-size))] min-w-[max(2.5rem,var(--target-size))] place-items-center rounded-lg border border-(--lp-line-strong) bg-(--lp-surface)/85 text-(--lp-muted) backdrop-blur hover:bg-(--lp-surface-2) hover:text-fd-foreground active:brightness-95"
                 >
-                  <GitBranch className="size-4" />
+                  <GitBranch className="size-4" aria-hidden="true" />
                 </a>
               </div>
               <p className="text-xs text-(--lp-muted)">
@@ -332,7 +340,7 @@ function Home() {
               </p>
             </div>
 
-            <dl className="mt-12 grid w-full max-w-2xl grid-cols-2 gap-px overflow-hidden rounded-xl border border-(--lp-line) bg-(--lp-line) md:grid-cols-4">
+            <dl className="lp-grid-divided mt-12 grid w-full max-w-2xl grid-cols-2 gap-px overflow-hidden rounded-xl border border-(--lp-line) bg-(--lp-line) md:grid-cols-4">
               {[
                 ['1', '个运行时依赖'],
                 ['47', '个可组合包'],
@@ -343,7 +351,9 @@ function Home() {
                   <dt className="font-display tracking-display text-xl font-semibold text-fd-foreground md:text-2xl">
                     {value}
                   </dt>
-                  <dd className="mt-1 text-[11px] tracking-wide text-(--lp-muted)">{label}</dd>
+                  <dd className="mt-1 text-[0.6875rem] tracking-wide text-(--lp-muted)">
+                    {label}
+                  </dd>
                 </div>
               ))}
             </dl>
@@ -351,7 +361,10 @@ function Home() {
         </section>
 
         {/* Pipeline */}
-        <section id="pipeline" className="scroll-mt-24 border-y border-(--lp-line) bg-(--lp-surface-2)/60">
+        <section
+          id="pipeline"
+          className="scroll-mt-24 border-y border-(--lp-line) bg-(--lp-surface-2)/60"
+        >
           <div className="landing-wrap py-16 md:py-20">
             <SectionHead
               eyebrow="请求即契约"
@@ -359,23 +372,23 @@ function Home() {
               lede="没有隐藏的编译产物，也没有约定俗成的目录魔法。请求从服务器适配器进来，穿过你写的中间件，命中你声明的路由，最后由你的 action 返回任意 Web 响应。"
             />
 
-            <ol className="mt-10 flex flex-col items-stretch gap-1.5 md:flex-row md:gap-0">
+            <ol role="list" className="mt-10 flex flex-col items-stretch gap-1.5 md:flex-row md:gap-0">
               {pipeline.map((step, index) => (
                 <Fragment key={step.label}>
                   {index > 0 && (
                     <li aria-hidden="true" className="flex items-center justify-center md:px-2">
-                      <ArrowRight className="size-4 rotate-90 text-(--lp-muted)/50 md:rotate-0" />
+                      <ArrowRight className="size-4 rotate-90 text-(--lp-muted) md:rotate-0" />
                     </li>
                   )}
                   <li className="flex flex-1 items-center gap-3 rounded-lg border border-(--lp-line) bg-(--lp-surface) px-4 py-3">
-                    <span className="font-mono-code text-[11px] font-medium text-fd-primary">
+                    <span className="font-mono-code text-[0.6875rem] font-medium text-fd-primary">
                       {pad(index + 1)}
                     </span>
                     <span className="min-w-0">
-                      <span className="font-mono-code block text-[13px] font-medium text-fd-foreground">
+                      <span className="font-mono-code block text-[0.8125rem] font-medium text-fd-foreground">
                         {step.label}
                       </span>
-                      <span className="mt-0.5 block text-[11px] text-(--lp-muted)">
+                      <span className="mt-0.5 block text-[0.6875rem] text-(--lp-muted)">
                         {step.detail}
                       </span>
                     </span>
@@ -386,32 +399,36 @@ function Home() {
 
             <div className="mt-10 grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
               <div>
-                <h3 className="font-display text-lg font-semibold">
+                <h3 className="font-display text-lg font-semibold text-balance">
                   URL 与处理器分离，类型贯穿全栈
                 </h3>
-                <p className="mt-3 text-sm leading-7 text-(--lp-muted)">
+                <p className="mt-3 text-sm leading-7 text-(--lp-muted) text-pretty">
                   在 <code className="font-mono-code text-fd-foreground">routes.ts</code> 里声明 URL，
                   在 <code className="font-mono-code text-fd-foreground">actions/</code> 里决定返回什么。
                   链接、表单、重定向与测试导入同一份类型化路由对象，改 URL 时编译器会告诉你哪里要跟着改。
                 </p>
-                <ul className="mt-6 space-y-3 text-sm text-(--lp-muted)">
+                <ul role="list" className="mt-6 space-y-3 text-sm text-(--lp-muted)">
                   {[
                     '只声明一次 URL，处处获得补全与类型检查',
                     'GET / POST 等 HTTP 方法是一等公民',
                     '同一个 action 可以返回 HTML、重定向、JSON、文件或流',
                   ].map((item) => (
-                    <li key={item} className="flex items-start gap-2.5">
-                      <Check className="mt-0.5 size-4 shrink-0 text-fd-primary" />
+                    <li key={item} className="flex items-start gap-2.5 text-pretty">
+                      <Check className="mt-0.5 size-4 shrink-0 text-fd-primary" aria-hidden="true" />
                       {item}
                     </li>
                   ))}
                 </ul>
-                <p className="mt-6 text-xs leading-6 text-(--lp-muted)/80">
+                <p className="mt-6 text-xs leading-6 text-(--lp-muted) text-pretty">
                   切换右侧标签页，看同一条路由如何在控制器里变成响应。
                 </p>
               </div>
 
-              <CodeBlock tabs={routeTabs} footer="remix/routes · remix/router" />
+              <CodeBlock
+                tabs={routeTabs}
+                label="路由与控制器示例"
+                footer="remix/routes · remix/router"
+              />
             </div>
           </div>
         </section>
@@ -432,15 +449,19 @@ function Home() {
               >
                 <div className="mb-3 flex items-center gap-3">
                   <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-(--lp-line) bg-(--lp-surface-2) text-fd-primary">
-                    <Icon className="size-4" />
+                    <Icon className="size-4" aria-hidden="true" />
                   </span>
-                  <h3 className="font-display text-[15px] font-semibold">{title}</h3>
-                  <span className="font-mono-code ml-auto text-[11px] text-(--lp-muted)/60">
+                  <h3 className="font-display text-[0.9375rem] font-semibold text-balance">
+                    {title}
+                  </h3>
+                  <span className="font-mono-code ml-auto text-[0.6875rem] text-(--lp-muted)">
                     {pad(index + 1)}
                   </span>
                 </div>
-                <p className="flex-1 text-[13px] leading-6 text-(--lp-muted)">{body}</p>
-                <code className="font-mono-code mt-4 block rounded-md border border-(--lp-line) bg-(--lp-surface-2) px-3 py-2 text-[11px] leading-5 break-words whitespace-pre-wrap text-fd-foreground/80">
+                <p className="flex-1 text-[0.8125rem] leading-6 text-(--lp-muted) text-pretty">
+                  {body}
+                </p>
+                <code className="font-mono-code mt-4 block rounded-md border border-(--lp-line) bg-(--lp-surface-2) px-3 py-2 text-[0.6875rem] leading-5 break-words whitespace-pre-wrap text-fd-foreground/85">
                   {code}
                 </code>
               </article>
@@ -452,21 +473,25 @@ function Home() {
         <section className="border-y border-(--lp-line) bg-(--lp-surface-2)/60">
           <div className="landing-wrap py-16 md:py-20">
             <div className="grid gap-10 lg:grid-cols-2 lg:items-start">
-              <CodeBlock tabs={[routerTab]} footer="中间件就是函数，顺序就是行为" />
+              <CodeBlock
+                tabs={[routerTab]}
+                label="路由器与中间件示例"
+                footer="中间件就是函数，顺序就是行为"
+              />
               <div>
                 <Eyebrow>组合</Eyebrow>
-                <h2 className="font-display text-[1.7rem] leading-snug font-semibold text-balance md:text-[2.05rem]">
+                <h2 className="font-display text-[clamp(1.55rem,1.35rem+0.9vw,2.05rem)] leading-snug font-semibold text-balance">
                   需要什么就接什么，
                   <br />
                   不需要就不在路径上
                 </h2>
-                <p className="mt-4 text-sm leading-7 text-(--lp-muted)">
+                <p className="mt-4 text-sm leading-7 text-(--lp-muted) text-pretty">
                   编译、会话、CSRF、CORS、压缩、日志都是中间件。它们只通过{' '}
                   <code className="font-mono-code text-fd-foreground">Request</code>、
                   <code className="font-mono-code text-fd-foreground">Response</code>{' '}
                   与上下文通信，所以可以单独测试、单独替换，也能在现有 Fetch 服务器里只用其中一个。
                 </p>
-                <div className="mt-6 grid gap-px overflow-hidden rounded-xl border border-(--lp-line) bg-(--lp-line) sm:grid-cols-2">
+                <div className="lp-grid-divided mt-6 grid gap-px overflow-hidden rounded-xl border border-(--lp-line) bg-(--lp-line) sm:grid-cols-2">
                   {[
                     { icon: Terminal, title: '内置 CLI', desc: 'new / routes / doctor / test' },
                     { icon: Layers, title: 'UI 组件模型', desc: 'SSR + 水合，无虚拟 DOM 绑定' },
@@ -475,10 +500,10 @@ function Home() {
                   ].map(({ icon: Icon, title, desc }) => (
                     <div key={title} className="bg-(--lp-surface) p-4">
                       <div className="flex items-center gap-2">
-                        <Icon className="size-4 shrink-0 text-fd-primary" />
-                        <span className="text-[13px] font-medium">{title}</span>
+                        <Icon className="size-4 shrink-0 text-fd-primary" aria-hidden="true" />
+                        <span className="text-[0.8125rem] font-medium">{title}</span>
                       </div>
-                      <div className="font-mono-code mt-1.5 text-[11px] text-(--lp-muted)">
+                      <div className="font-mono-code mt-1.5 text-[0.6875rem] text-(--lp-muted)">
                         {desc}
                       </div>
                     </div>
@@ -496,18 +521,20 @@ function Home() {
             title="六条原则，决定每一个 API 的形状"
             lede="Remix 不追逐抽象层，而是把浏览器与服务器共有的部分做到极致——让应用更容易被人和模型理解。"
           />
-          <ol className="mt-10 grid gap-x-10 border-b border-(--lp-line) md:grid-cols-2">
+          <ol role="list" className="mt-10 grid gap-x-10 border-b border-(--lp-line) md:grid-cols-2">
             {principles.map(({ icon: Icon, title, body }, index) => (
               <li key={title} className="flex gap-4 border-t border-(--lp-line) py-5">
                 <span className="font-mono-code pt-0.5 text-sm font-medium text-fd-primary">
                   {pad(index + 1)}
                 </span>
                 <div>
-                  <h3 className="font-display flex items-center gap-2 text-[15px] font-semibold">
-                    <Icon className="size-4 shrink-0 text-fd-primary" />
+                  <h3 className="font-display flex items-center gap-2 text-[0.9375rem] font-semibold text-balance">
+                    <Icon className="size-4 shrink-0 text-fd-primary" aria-hidden="true" />
                     {title}
                   </h3>
-                  <p className="mt-1.5 text-[13px] leading-6 text-(--lp-muted)">{body}</p>
+                  <p className="mt-1.5 text-[0.8125rem] leading-6 text-(--lp-muted) text-pretty">
+                    {body}
+                  </p>
                 </div>
               </li>
             ))}
@@ -515,22 +542,26 @@ function Home() {
         </section>
 
         {/* Packages */}
-        <section id="packages" className="scroll-mt-24 border-y border-(--lp-line) bg-(--lp-surface-2)/60">
+        <section
+          id="packages"
+          className="scroll-mt-24 border-y border-(--lp-line) bg-(--lp-surface-2)/60"
+        >
           <div className="landing-wrap py-16 md:py-20">
             <div className="grid gap-10 lg:grid-cols-[0.85fr_1.15fr] lg:items-start">
               <div>
                 <Eyebrow>可组合的生态</Eyebrow>
-                <h2 className="font-display text-[1.7rem] leading-snug font-semibold text-balance md:text-[2.05rem]">
+                <h2 className="font-display text-[clamp(1.55rem,1.35rem+0.9vw,2.05rem)] leading-snug font-semibold text-balance">
                   一个 remix 包，
                   <br />
                   也能按需拆开使用
                 </h2>
-                <p className="mt-4 max-w-md text-sm leading-7 text-(--lp-muted)">
+                <p className="mt-4 max-w-md text-sm leading-7 text-(--lp-muted) text-pretty">
                   大多数包都是独立的 JavaScript/TypeScript 工具：Fetch 路由器、multipart 解析器、
-                  数据表、会话存储、资源服务器……<code className="font-mono-code text-fd-foreground">remix</code>{' '}
+                  数据表、会话存储、资源服务器……
+                  <code className="font-mono-code text-fd-foreground">remix</code>{' '}
                   只是把它们统一起来分发与文档化。已经有服务器？单独装一个包即可。
                 </p>
-                <p className="font-mono-code mt-6 text-[11px] tracking-wide text-(--lp-muted)/80">
+                <p className="font-mono-code mt-6 text-[0.6875rem] tracking-wide text-(--lp-muted)">
                   {packageGroups.reduce((n, g) => n + g.items.length, 0)} packages · 1 runtime
                   dependency
                 </p>
@@ -546,21 +577,21 @@ function Home() {
                     )}
                   >
                     <div className="flex items-baseline gap-2 md:flex-col md:gap-1">
-                      <span className="text-[13px] font-medium">{group.label}</span>
-                      <span className="font-mono-code text-[11px] text-(--lp-muted)">
+                      <h3 className="text-[0.8125rem] font-medium text-balance">{group.label}</h3>
+                      <span className="font-mono-code text-[0.6875rem] text-(--lp-muted)">
                         {group.items.length} 个包
                       </span>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
+                    <ul role="list" className="flex flex-wrap gap-1.5">
                       {group.items.map((name) => (
-                        <span
+                        <li
                           key={name}
-                          className="font-mono-code rounded-md border border-(--lp-line) bg-(--lp-surface-2) px-2 py-1 text-[11px] text-(--lp-muted) transition hover:border-fd-primary/50 hover:text-fd-foreground"
+                          className="font-mono-code rounded-md border border-(--lp-line) bg-(--lp-surface-2) px-2 py-1 text-[0.6875rem] text-(--lp-muted) transition-colors hover:border-fd-primary/50 hover:text-fd-foreground"
                         >
                           {name}
-                        </span>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 ))}
               </div>
@@ -573,11 +604,11 @@ function Home() {
           <div className="relative overflow-hidden rounded-2xl border border-(--lp-line) bg-(--lp-surface) px-6 py-14 text-center md:px-16 md:py-16">
             <div className="hero-glow pointer-events-none absolute inset-0 opacity-70" />
             <div className="relative">
-              <Braces className="mx-auto mb-5 size-7 text-fd-primary" />
-              <h2 className="font-display mx-auto max-w-2xl text-[1.7rem] font-semibold text-balance md:text-[2.05rem]">
+              <Braces className="mx-auto mb-5 size-7 text-fd-primary" aria-hidden="true" />
+              <h2 className="font-display mx-auto max-w-2xl text-[clamp(1.55rem,1.35rem+0.9vw,2.05rem)] font-semibold text-balance">
                 先跑起来，再读细节
               </h2>
-              <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-(--lp-muted)">
+              <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-(--lp-muted) text-pretty">
                 用一条命令创建应用，跟着中文指南把路由、渲染、表单、认证与部署走一遍。
                 文档内容跟随 remix-run/remix 上游同步更新。
               </p>
@@ -585,16 +616,16 @@ function Home() {
                 <Link
                   to="/docs/$"
                   params={{ _splat: 'start-here' }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-fd-primary px-5 py-2.5 text-sm font-medium text-fd-primary-foreground transition hover:opacity-90"
+                  className="lp-press inline-flex min-h-(--target-size) items-center gap-2 rounded-lg bg-fd-primary px-5 py-2.5 text-sm font-medium text-fd-primary-foreground hover:opacity-90 active:brightness-95"
                 >
                   阅读中文文档
-                  <ArrowRight className="size-4" />
+                  <ArrowRight className="size-4" aria-hidden="true" />
                 </Link>
                 <a
                   href="https://docs.remix.run"
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-lg border border-(--lp-line) bg-(--lp-surface-2)/70 px-5 py-2.5 text-sm font-medium transition hover:border-(--lp-line-strong)"
+                  className="lp-press inline-flex min-h-(--target-size) items-center gap-2 rounded-lg border border-(--lp-line-strong) bg-(--lp-surface-2)/85 px-5 py-2.5 text-sm font-medium hover:bg-(--lp-surface-2) active:brightness-95"
                 >
                   官方文档
                 </a>
@@ -602,35 +633,46 @@ function Home() {
             </div>
           </div>
         </section>
-
-        <footer className="border-t border-(--lp-line)">
-          <div className="landing-wrap flex flex-col items-center justify-between gap-4 py-8 text-xs text-(--lp-muted) md:flex-row">
-            <img
-              src="/remix-logo.svg"
-              alt="Remix"
-              className="size-4 dark:invert"
-              width={16}
-              height={16}
-            />
-            <div className="flex items-center gap-5">
-              <Link to="/docs/$" params={{ _splat: '' }} className="hover:text-fd-foreground">
-                文档
-              </Link>
-              <a href="https://remix.run" target="_blank" rel="noreferrer" className="hover:text-fd-foreground">
-                remix.run
-              </a>
-              <a
-                href="https://github.com/remix-run/remix"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-fd-foreground"
-              >
-                GitHub
-              </a>
-            </div>
-          </div>
-        </footer>
       </main>
+
+      <footer className="border-t border-(--lp-line)">
+        <div className="landing-wrap flex flex-col items-center justify-between gap-4 py-8 text-xs text-(--lp-muted) md:flex-row">
+          <img
+            src="/remix-logo.svg"
+            alt="Remix"
+            className="size-4 dark:invert"
+            width={16}
+            height={16}
+            loading="lazy"
+            decoding="async"
+          />
+          <nav aria-label="页脚" className="flex flex-wrap items-center justify-center gap-4">
+            <Link
+              to="/docs/$"
+              params={{ _splat: '' }}
+              className="inline-flex min-h-(--target-size) min-w-(--target-size) items-center justify-center px-1.5 hover:text-fd-foreground"
+            >
+              文档
+            </Link>
+            <a
+              href="https://remix.run"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-(--target-size) min-w-(--target-size) items-center justify-center px-1.5 hover:text-fd-foreground"
+            >
+              remix.run
+            </a>
+            <a
+              href="https://github.com/remix-run/remix"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-(--target-size) min-w-(--target-size) items-center justify-center px-1.5 hover:text-fd-foreground"
+            >
+              GitHub
+            </a>
+          </nav>
+        </div>
+      </footer>
     </HomeLayout>
   );
 }

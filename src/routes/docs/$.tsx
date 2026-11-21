@@ -29,6 +29,8 @@ export const Route = createFileRoute('/docs/$')({
 
     return {
       path: page.path,
+      title: page.data.title,
+      description: page.data.description,
       markdownUrl: `${page.url}.md`,
       imageUrl: getPageImageUrl(page).url,
       // Serialization renders icon/name nodes with react-dom/server, which
@@ -39,7 +41,15 @@ export const Route = createFileRoute('/docs/$')({
     };
   },
   head: ({ loaderData }) => ({
-    meta: loaderData ? [{ property: 'og:image', content: loaderData.imageUrl }] : [],
+    meta: loaderData
+      ? [
+          { title: `${loaderData.title} | Remix 中文文档` },
+          ...(loaderData.description
+            ? [{ name: 'description', content: loaderData.description }]
+            : []),
+          { property: 'og:image', content: loaderData.imageUrl },
+        ]
+      : [],
   }),
 });
 

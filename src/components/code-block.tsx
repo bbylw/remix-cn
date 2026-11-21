@@ -1,6 +1,15 @@
-import { Check, Copy } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { Check, Copy, TriangleAlert } from 'lucide-react';
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { cn } from '@/lib/cn';
+import { installCopyCommands } from '@/lib/copy';
 
 export type CodeTab = {
   file: string;
@@ -23,6 +32,20 @@ const TOKEN_STYLE = [
 
 const RULE =
   /(\/\/[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b(?:import|from|export|const|let|var|async|await|return|if|else|new|default|function|type|interface|class|extends|for|of|in|try|catch|throw|as|typeof)\b)|(\b(?:true|false|null|undefined|this)\b)|(\b\d+(?:\.\d+)?\b)|(<\/?[A-Za-z][\w.]*)|(\b[A-Z][A-Za-z0-9_]*\b)|([A-Za-z_$][\w$]*(?=\s*\())|([A-Za-z_$][\w$]*(?=\s*:))|([{}[\]().,;:=<>+\-*/%&|!?]+)/g;
+
+let focusgroupPolyfillPromise: Promise<void> | null = null;
+
+function ensureFocusgroupPolyfill() {
+  if (
+    Object.hasOwn(HTMLElement.prototype, 'focusGroup') ||
+    Object.hasOwn(HTMLElement.prototype, 'focusgroup')
+  ) {
+    return;
+  }
+  focusgroupPolyfillPromise ??= import('@microsoft/focusgroup-polyfill').then(
+    ({ polyfillBodyAndObserve }) => polyfillBodyAndObserve(),
+  );
+}
 
 function highlightLine(line: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -57,100 +80,207 @@ function highlightLine(line: string, keyBase: string): ReactNode[] {
   return nodes;
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
-
+function CopyButton({ targetId, label }: { targetId: string; label: string }) {
   return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={copied ? '已复制' : '复制代码'}
-      className="grid size-7 shrink-0 place-items-center rounded-md text-[#8b949e] transition hover:bg-white/8 hover:text-[#e6edf3]"
-    >
-      {copied ? <Check className="size-3.5 text-[#3fb950]" /> : <Copy className="size-3.5" />}
-    </button>
+    <span className="copy-wrap">
+      <button
+        type="button"
+        aria-label={label}
+        {...({ command: '--copy', commandfor: targetId } as object)}
+        className="copy-button lp-press grid shrink-0 place-items-center rounded-md text-[#8b949e] hover:bg-white/8 hover:text-[#e6edf3] active:brightness-95"
+      >
+        <Copy className="copy-idle size-3.5" aria-hidden="true" />
+        <Check className="copy-done size-3.5" aria-hidden="true" />
+        <TriangleAlert className="copy-failed size-3.5" aria-hidden="true" />
+      </button>
+      <span className="copy-tip font-mono-code" role="status" />
+    </span>
+  );
+}
+
+function CodeLines({ code }: { code: string }) {
+  return (
+    <>
+      {/* The newline text nodes are the copy source: innerText drops empty lines. */}
+      {code
+        .replace(/\n$/, '')
+        .split('\n')
+        .map((line, lineIndex) => (
+          <Fragment key={lineIndex}>
+            {lineIndex > 0 && '\n'}
+            <span className="code-line">
+              <span className="code-text">{highlightLine(line, `l${lineIndex}`)}</span>
+            </span>
+          </Fragment>
+        ))}
+    </>
   );
 }
 
 export function CodeBlock({
   tabs,
+  label,
   footer,
   className,
 }: {
   tabs: CodeTab[];
+  label: string;
   footer?: string;
   className?: string;
 }) {
   const [active, setActive] = useState(0);
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const panelRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const hasTabs = tabs.length > 1;
   const tab = tabs[active];
-  const lines = tab.code.replace(/\n$/, '').split('\n');
+
+  useEffect(() => {
+    installCopyCommands();
+    if (hasTabs) ensureFocusgroupPolyfill();
+  }, [hasTabs]);
+
+  useEffect(() => {
+    if (!hasTabs) return;
+    panelRefs.current.forEach((node, index) => {
+      if (!node) return;
+      // React only renders `hidden` as a boolean attribute, so `until-found` has to be
+      // applied imperatively for find-in-page to reach inactive panels.
+      if (index === active) node.removeAttribute('hidden');
+      else node.setAttribute('hidden', 'until-found');
+    });
+  }, [active, hasTabs]);
+
+  useEffect(() => {
+    if (!hasTabs) return;
+    const cleanups: (() => void)[] = [];
+    panelRefs.current.forEach((node, index) => {
+      if (!node) return;
+      const sync = () => select(index, false);
+      node.addEventListener('beforematch', sync);
+      cleanups.push(() => node.removeEventListener('beforematch', sync));
+    });
+    return () => cleanups.forEach((fn) => fn());
+  }, [hasTabs, tabs.length]);
+
+  function select(index: number, scrollTab = true) {
+    setActive(index);
+    if (!scrollTab) return;
+    const list = tablistRef.current;
+    if (list && list.scrollWidth > list.clientWidth) {
+      tabRefs.current[index]?.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+        container: 'nearest',
+      } as ScrollIntoViewOptions);
+    }
+  }
 
   return (
-    <div
+    <figure
       className={cn(
-        'lp-editor overflow-hidden rounded-xl border border-[#2b3138] bg-[#0d1117] shadow-[0_24px_60px_-32px_rgba(0,0,0,0.9)]',
+        'lp-editor overflow-hidden rounded-xl border border-[#30363d] bg-[#0d1117] shadow-[0_24px_60px_-32px_rgba(0,0,0,0.9)]',
         className,
       )}
+      style={{ '--lp-tab-anchor': `--lp-tab-${uid}` } as CSSProperties}
     >
       <div className="flex items-stretch border-b border-[#21262d] bg-[#11151a]">
-        <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto" role="tablist">
-          {tabs.map((t, index) => (
-            <button
-              key={t.file}
-              type="button"
-              role="tab"
-              aria-selected={index === active}
-              onClick={() => setActive(index)}
-              className={cn(
-                'font-mono-code relative flex shrink-0 items-center gap-2 px-4 py-2.5 text-[11.5px] transition',
-                index === active
-                  ? 'bg-[#0d1117] text-[#e6edf3]'
-                  : 'text-[#7d8590] hover:bg-white/4 hover:text-[#adbac7]',
-              )}
-            >
-              {index === active && (
-                <span className="absolute inset-x-0 top-0 h-px bg-[#4d9bff]" />
-              )}
-              {t.file}
-            </button>
-          ))}
-        </div>
+        {hasTabs ? (
+          <div
+            ref={tablistRef}
+            role="tablist"
+            aria-label={label}
+            {...({ focusgroup: 'tablist nomemory' } as object)}
+            className="lp-tablist flex min-w-0 flex-1 items-stretch overflow-x-auto"
+          >
+            {tabs.map((t, index) => (
+              <button
+                key={t.file}
+                ref={(node) => {
+                  tabRefs.current[index] = node;
+                }}
+                type="button"
+                role="tab"
+                id={`${uid}-tab-${index}`}
+                aria-selected={index === active}
+                {...(index === active ? ({ focusgroupstart: '' } as object) : {})}
+                onFocus={() => {
+                  if (index !== active) select(index);
+                }}
+                onClick={() => select(index)}
+                className={cn(
+                  'lp-tab lp-press font-mono-code flex shrink-0 items-center px-4 py-2.5 text-xs',
+                  index === active
+                    ? 'bg-[#0d1117] text-[#e6edf3]'
+                    : 'text-[#8b949e] hover:bg-white/4 hover:text-[#c9d1d9]',
+                )}
+              >
+                {t.file}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <figcaption
+            id={`${uid}-caption`}
+            className="font-mono-code flex min-w-0 flex-1 items-center border-t-2 border-fd-primary bg-[#0d1117] px-4 py-2.5 text-xs text-[#e6edf3]"
+          >
+            {tab.file}
+          </figcaption>
+        )}
         <div className="flex items-center gap-2 border-l border-[#21262d] px-2.5">
-          <span className="font-mono-code hidden text-[10px] tracking-wide text-[#7d8590] uppercase sm:inline">
+          <span className="font-mono-code hidden text-[0.6875rem] tracking-wide text-[#8b949e] uppercase sm:inline">
             {tab.lang ?? 'ts'}
           </span>
-          <CopyButton text={tab.code} />
+          <CopyButton targetId={`${uid}-code-${active}`} label={`复制 ${tab.file} 代码`} />
         </div>
       </div>
 
-      <pre className="font-mono-code overflow-x-auto py-4 text-[12.5px] leading-6 text-[#d7e0ea]">
-        <code>
-          {lines.map((line, index) => (
-            <span key={index} className="code-line">
-              <span className="code-gutter" aria-hidden="true">
-                {index + 1}
-              </span>
-              <span className="code-text">{highlightLine(line, `l${index}`)}</span>
-            </span>
+      {hasTabs ? (
+        <div className="lp-panels">
+          {tabs.map((t, index) => (
+            <div
+              key={t.file}
+              ref={(node) => {
+                panelRefs.current[index] = node;
+              }}
+              role="tabpanel"
+              id={`${uid}-panel-${index}`}
+              aria-labelledby={`${uid}-tab-${index}`}
+              className="lp-panel"
+              {...(index === active ? {} : { hidden: true })}
+            >
+              <pre
+                role="region"
+                aria-labelledby={`${uid}-tab-${index}`}
+                className="font-mono-code overflow-x-auto py-4 text-[0.8125rem] leading-[1.85] text-[#d7e0ea]"
+                tabIndex={index === active ? 0 : undefined}
+              >
+                <code id={`${uid}-code-${index}`}>
+                  <CodeLines code={t.code} />
+                </code>
+              </pre>
+            </div>
           ))}
-        </code>
-      </pre>
+        </div>
+      ) : (
+        <pre
+          role="region"
+          aria-labelledby={`${uid}-caption`}
+          className="font-mono-code overflow-x-auto py-4 text-[0.8125rem] leading-[1.85] text-[#d7e0ea]"
+          tabIndex={0}
+        >
+          <code id={`${uid}-code-0`}>
+            <CodeLines code={tab.code} />
+          </code>
+        </pre>
+      )}
 
       {footer && (
-        <div className="font-mono-code border-t border-[#21262d] px-4 py-2.5 text-[11px] text-[#7d8590]">
+        <div className="font-mono-code border-t border-[#21262d] px-4 py-2.5 text-[0.6875rem] text-[#8b949e]">
           {footer}
         </div>
       )}
-    </div>
+    </figure>
   );
 }

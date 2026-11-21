@@ -10,7 +10,9 @@ const server = createFromSource(source, {
 export const Route = createFileRoute('/api/search')({
   server: {
     handlers: {
-      GET: async ({ request }) => server.GET(request),
+      // GitHub Pages is static: this route is prerendered into a search index
+      // which the browser downloads once and queries locally.
+      GET: async () => server.staticGET(),
     },
   },
 });

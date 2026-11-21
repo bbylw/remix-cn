@@ -21,6 +21,10 @@ export default defineConfig({
     // please see https://tanstack.com/start/latest/docs/framework/react/guide/hosting#nitro for guides on hosting
     nitro({
       preset: 'vercel',
+      prerender: {
+        // Emit the search index as a static file for GitHub Pages.
+        routes: ['/api/search'],
+      },
     }),
   ],
   resolve: {

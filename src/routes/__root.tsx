@@ -35,7 +35,10 @@ function RootComponent() {
         <HeadContent />
       </head>
       <body className="flex flex-col min-h-screen">
-        <RootProvider theme={{ defaultTheme: 'dark' }}>
+        <RootProvider
+          theme={{ defaultTheme: 'dark' }}
+          search={{ options: { type: 'static', api: '/api/search' } }}
+        >
           <Outlet />
         </RootProvider>
         <Scripts />

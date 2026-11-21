@@ -82,7 +82,7 @@ function Page() {
   const { path, pageTree, markdownUrl } = useFumadocsLoader(Route.useLoaderData());
 
   return (
-    <DocsLayout {...baseOptions()} tree={pageTree as PageTreeRoot}>
+    <DocsLayout {...baseOptions()} links={[]} tree={pageTree as PageTreeRoot}>
       <Suspense>
         <Content path={path} markdownUrl={markdownUrl} />
       </Suspense>

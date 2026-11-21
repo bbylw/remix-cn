@@ -1,6 +1,6 @@
 import { createFileRoute, notFound } from '@tanstack/react-router';
+import type { Root as PageTreeRoot } from 'fumadocs-core/page-tree';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
-import { createServerFn } from '@tanstack/react-start';
 import { docs, source } from '@/lib/source';
 import {
   DocsBody,
@@ -19,31 +19,29 @@ import { useMDXComponents } from '@/components/mdx';
 export const Route = createFileRoute('/docs/$')({
   component: Page,
   loader: async ({ params }) => {
-    const slugs = params._splat?.split('/') ?? [];
-    const data = await serverLoader({ data: slugs });
-    await docs.getPage(data.path)?.preload();
-    return data;
-  },
-  head: ({ loaderData }) => ({
-    meta: loaderData ? [{ property: 'og:image', content: loaderData.imageUrl }] : [],
-  }),
-});
-
-const serverLoader = createServerFn({
-  method: 'GET',
-})
-  .validator((slugs: string[]) => slugs)
-  .handler(async ({ data: slugs }) => {
+    // No server function: GitHub Pages is static, so this loader also runs in
+    // the browser during client-side navigation.
+    const slugs = params._splat?.split('/').filter((v) => v.length > 0) ?? [];
     const page = source.getPage(slugs);
     if (!page) throw notFound();
+
+    await docs.getPage(page.path)?.preload();
 
     return {
       path: page.path,
       markdownUrl: `${page.url}.md`,
       imageUrl: getPageImageUrl(page).url,
-      pageTree: await source.serializePageTree(source.getPageTree()),
+      // Serialization renders icon/name nodes with react-dom/server, which
+      // cannot run in the browser. Client navigation can use the tree as-is.
+      pageTree: import.meta.env.SSR
+        ? await source.serializePageTree(source.getPageTree())
+        : source.getPageTree(),
     };
-  });
+  },
+  head: ({ loaderData }) => ({
+    meta: loaderData ? [{ property: 'og:image', content: loaderData.imageUrl }] : [],
+  }),
+});
 
 function Content({ path, markdownUrl }: { path: string; markdownUrl: string }) {
   const page = docs.getPage(path);
@@ -74,7 +72,7 @@ function Page() {
   const { path, pageTree, markdownUrl } = useFumadocsLoader(Route.useLoaderData());
 
   return (
-    <DocsLayout {...baseOptions()} tree={pageTree}>
+    <DocsLayout {...baseOptions()} tree={pageTree as PageTreeRoot}>
       <Suspense>
         <Content path={path} markdownUrl={markdownUrl} />
       </Suspense>
